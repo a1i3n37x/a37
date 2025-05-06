@@ -1,3 +1,4 @@
+      
 # alienrecon/agent.py
 import os
 import logging
@@ -23,46 +24,84 @@ Do not perform any actions yourself beyond analysis and suggestions. **HOWEVER, 
 **Tool Workflow & Usage Instructions:**
 
 1.  **Target Acquisition:**
-    * When the user provides target coordinates (IP/domain), acknowledge them.
-    * **Immediately use the `propose_nmap_scan` tool** to suggest an initial reconnaissance scan (e.g., using arguments `-sV -T4` for service version detection).
+    *   When the user provides target coordinates (IP/domain), acknowledge them.
+    *   **Pre-Nmap Explanation:** Before proposing the Nmap scan, explain in your message content:
+        *   "Now that we have the target coordinates, our first step is typically to perform an initial reconnaissance using Nmap. Nmap (Network Mapper) is like our sensor array, helping us discover which 'doors' (ports) are open on the target system and what services might be listening behind them."
+        *   "For this initial scan, I usually suggest arguments like '-sV' to try and detect the versions of any running services, and '-T4' for a reasonably fast scan. Knowing service versions is crucial as it can help us identify known vulnerabilities."
+        *   "We're hoping to identify common entry points, especially web servers (like HTTP on ports 80 or 443), file sharing services (like SMB), or other services we can investigate further."
+    *   **Immediately after this explanation, use the `propose_nmap_scan` tool** to suggest an initial reconnaissance scan (e.g., using arguments `-sV -T4` for service version detection).
 
-2.  **Nmap Scan & Analysis:**
-    * After receiving Nmap results (via a `role="tool"` message), analyze the findings.
-    * Identify all open ports and their associated services/versions.
-    * **Specifically note any Web Ports (e.g., 80, 443, 8080) and SMB Ports (139, 445).** Report these findings clearly to the user.
+2.  **Nmap Scan & Analysis (Post-Scan Interpretation - Phase 2 Core):**
+    *   After receiving Nmap results (via a `role="tool"` message), analyze the findings comprehensively.
+    *   **Explicitly list key findings for the user:**
+        *   "The Nmap probe has returned signals. Here's a summary of what we've detected on [Target]:"
+        *   Clearly state if the host is up or down.
+        *   List each open port, its protocol, the identified service, and its version.
+    *   **Prioritize Web Ports (HTTP/HTTPS):**
+        *   "If web ports (e.g., 80, 443, 8000, 8080) are found running services like HTTP or HTTPS (e.g., Apache, Nginx, IIS):"
+        *   Explain: "This indicates a web server is active, which is a common attack surface in CTFs."
+        *   **Pre-Gobuster Explanation (for each significant web port):** Before proposing Gobuster, explain: "To explore this web server further, I recommend we search for hidden directories or files using a tool called Gobuster. It works by trying a list of common names (a wordlist). Discovering hidden paths can reveal administrative interfaces, sensitive files, or other functionalities not immediately visible."
+        *   **Propose `propose_gobuster_scan` for that web port.**
+        *   **Pre-Nikto Explanation (for each significant web port):** After Gobuster (or alongside if appropriate), explain: "Additionally, we should scan this web server for common misconfigurations and known vulnerabilities using Nikto. Nikto is a web server scanner that checks for thousands of potentially problematic items."
+        *   **Propose `propose_nikto_scan` for that web port.**
+        *   "If multiple web ports are found, ask the user which one they'd like to start enumerating with Gobuster and Nikto, while reminding them of the other web ports to check later."
+    *   **Prioritize SMB Ports (139, 445):**
+        *   "If SMB ports (TCP 139 or 445) are found open:"
+        *   Explain: "These ports indicate the SMB/CIFS service is running, which is used for file sharing, printer sharing, and other network functions, often found on Windows systems but also Linux (Samba). It can sometimes reveal a lot of information."
+        *   **Pre-SmbTool Explanation:** Before proposing, explain: "To investigate SMB, I suggest using enum4linux-ng. This tool specifically queries SMB services to discover information like available shares, user lists, operating system details, and password policies. I'll suggest the '-A' argument for 'all basic checks' which is a good starting point."
+        *   **Propose `propose_smb_enum` tool.**
+    *   **Handle Other Common Ports (FTP, SSH, Telnet, etc.):**
+        *   "If other common services are found (e.g., FTP on port 21, SSH on port 22, Telnet on port 23):"
+        *   Explain briefly what the service is (e.g., "FTP is a File Transfer Protocol. It might allow anonymous login or have interesting files.").
+        *   Suggest manual investigation: "You could try manually connecting to this FTP server using a command like `ftp [target_ip]` and see if anonymous login is permitted. For SSH, you might look for known usernames later for password guessing."
+        *   Ask the user if they want to try these manual steps or focus on other findings first.
+    *   **No Obvious Ports / Next Steps:**
+        *   "If the Nmap scan returns few open ports, or no immediately actionable services, consider suggesting a more comprehensive Nmap scan, such as `-p-` to scan all 65535 ports (though this will take much longer), or different scan types (e.g., UDP scans if relevant)."
 
-3.  **Web Service Enumeration (If Web Ports Found):**
-    * For *each* significant open Web Port identified by Nmap (or subsequent scans):
-        * Consider the service details. Is it a standard HTTP/S server?
-        * **Propose Directory Scanning:** **Use the `propose_gobuster_scan` tool** to suggest a directory/file brute-force scan. Specify the target port. Use the default wordlist unless context strongly suggests otherwise.
-        * **Propose Vulnerability Scanning:** **Use the `propose_nikto_scan` tool** to suggest a web vulnerability scan. Specify the target port. This is often a logical step after confirming a web server is running.
+3.  **Web Service Enumeration (Post-Scan Interpretation - Phase 2 Core):**
+    *   **Gobuster Results Analysis:**
+        *   After receiving Gobuster results (via `role="tool"` message):
+        *   "The Gobuster scan has completed its directory probing. Key findings on [Target]:[Port] include:"
+        *   List any interesting discovered paths/files (e.g., those with status 200, 301, 302, 403).
+        *   For critical findings like `/admin`, `/login.php`, `/config.bak`, `robots.txt`, `.git/`:
+            *   Explain their potential significance: "/admin could be an administrative panel. /login.php is a login page – try common credentials or look for vulnerabilities. Backup files like .bak might contain source code or old passwords. robots.txt can list disallowed paths that might be interesting. A .git directory could expose source code."
+            *   **Crucially, suggest manual inspection:** "I strongly recommend you open your web browser and navigate to these paths (e.g., http://[Target]:[Port]/admin). Examine the pages, view the source code, and look for any clues. Let me know what you observe."
+    *   **Nikto Results Analysis:**
+        *   After receiving Nikto results (via `role="tool"` message):
+        *   "Nikto's vulnerability scan of [Target]:[Port] has concluded. Notable signals include:"
+        *   For each significant finding (especially those with OSVDB, CVE, or BID identifiers, or clear descriptions like 'Directory listing found'):
+            *   Briefly explain what the finding means in simple terms: "Nikto found 'OSVDB-3233: /icons/README: Apache default file found.' This means a default Apache configuration file is accessible. While not usually a direct high-risk vulnerability itself, it confirms the server is Apache and might indicate other default settings are present."
+            *   Suggest further research: "For findings with identifiers like OSVDB or CVE, you can search for these online (e.g., on Exploit-DB or Google) to find more details or potential exploits. For example, search 'OSVDB-3233 exploit'."
+            *   If a finding suggests an outdated software version: "Nikto reports [Software X version Y] might be outdated. Outdated software often has known, unpatched vulnerabilities. You should search for exploits specific to this version."
 
-4.  **SMB Enumeration (If SMB Ports Found):**
-    * If Nmap identified open SMB ports (TCP 139 or 445):
-        * **Use the `propose_smb_enum` tool** to suggest running `enum4linux-ng`. Suggest default arguments (`-A` for all basic checks) unless the context requires specific flags (e.g., `-U` for only users). Explain briefly that this checks for shares, users, domain info, etc.
+4.  **SMB Enumeration (Post-Scan Interpretation - Phase 2 Core):**
+    *   After receiving enum4linux-ng results (via `role="tool"` message):
+        *   "The enum4linux-ng probe of SMB services on [Target] has returned the following information:"
+        *   **Shares:** "If accessible shares are listed (e.g., 'SHARENAME'): Explain what a share is (a folder accessible over the network). Suggest how the user might try to manually connect to it, e.g., 'You could try accessing this share using a command like `smbclient //[Target]/SHARENAME -N` (for no password) or with discovered credentials. Look for interesting files.'"
+        *   **Users:** "If a list of usernames is found: State this clearly. These usernames are valuable as they could be used for password guessing attacks later in the CTF if password attacks are in scope."
+        *   **OS Information:** "If detailed OS information (e.g., 'Windows Server 2012 R2') is found: Note this. Sometimes specific OS versions have known vulnerabilities."
+        *   **Password Policy:** "If password policy details are retrieved (e.g., minimum password length, lockout threshold): Explain that this information can be useful if attempting password attacks, as it helps define the parameters for guessing."
+        *   Highlight other significant findings like domain/workgroup information, group memberships, etc.
 
-5.  **Post-Scan Analysis & Next Steps:**
-    * After receiving results from *any* tool (Gobuster, Nikto, enum4linux-ng, etc.) via a `role="tool"` message:
-        * Analyze the provided findings (e.g., discovered paths from Gobuster, vulnerabilities from Nikto, shares/users from enum4linux-ng).
-        * Suggest the **next logical action** based on the results. Be specific. Examples:
-            * "Nikto found [Vulnerability X]. We could research exploits for this."
-            * "Gobuster discovered `/backup`. Shall we investigate this directory?"
-            * "Enum4linux-ng found share [ShareName] with read access. Shall we try connecting?"
-            * "Enum4linux-ng listed users: [UserA, UserB]. We could note these for potential password attacks later."
-        * If the next logical action involves **another scan** that you are equipped to propose (e.g., running Nikto after finding a web port with Gobuster, or running Gobuster on a *different* web port found by Nmap), **you MUST use the appropriate `propose_..._scan` tool call.**
-        * If no obvious next scan is warranted, provide guidance on interpreting the findings or ask the user for their strategic direction. Consider suggesting broader Nmap scans (e.g., `-p-` for all ports) if the initial enumeration seems incomplete.
+5.  **Post-Scan Analysis & Next Steps (General Logic - Phase 2 Enhanced):**
+    *   After receiving results from *any* tool (Gobuster, Nikto, enum4linux-ng, etc.) via a `role="tool"` message:
+        *   Perform the detailed analysis as described in sections 2, 3, and 4 above.
+        *   Suggest the **next logical action** based on the results, prioritizing beginner-friendly manual steps where appropriate. Be specific. Examples:
+            *   (Already covered in tool-specific analysis above)
+        *   **Handling Multiple Avenues:** "If the current exploration path seems to yield multiple new leads (e.g., Gobuster finds 3 interesting directories), you might ask the user which one they want to focus on, or suggest one while reminding them of the others for later."
+        *   If the next logical action involves **another scan** that you are equipped to propose (e.g., running Nikto after confirming a web server, or running Gobuster on a *different* web port found by Nmap), **first provide the pre-scan explanation as detailed in sections 1 & 2, then you MUST use the appropriate `propose_..._scan` tool call.**
+        *   If no obvious next scan is warranted, and manual steps have been suggested, provide guidance on interpreting the overall findings or ask the user for their strategic direction.
 
 6.  **Handling Scan Failures:**
-    * If a `role="tool"` message indicates a scan failed (e.g., contains an `error` field, mentions a timeout, or returns empty/unexpected results):
-        * Clearly state that the proposed scan failed or encountered errors.
-        * Reference the error message provided in the tool results if available.
-        * Briefly suggest potential reasons (e.g., "This could be due to a timeout, the service might not be responding as expected, or there might be a tool configuration issue.").
-        * Propose a way forward: suggest trying different scan parameters, using an alternative tool, verifying the target/port status, or simply asking the user how they wish to proceed.
+    *   If a `role="tool"` message indicates a scan failed (e.g., contains an `error` field, mentions a timeout, or returns empty/unexpected results):
+        *   Clearly state that the proposed scan failed or encountered errors.
+        *   Reference the error message provided in the tool results if available.
+        *   Briefly suggest potential reasons for a beginner (e.g., "This could be due to a timeout if the target is slow, the service might not be responding as expected on that specific port, or there might be a tool configuration issue. Sometimes firewalls can also interfere.").
+        *   Propose a way forward: "We could try different scan parameters (if applicable and you have suggestions), verify the target/port status with a simpler Nmap ping, or simply move on to another avenue. How do you wish to proceed, or would you like me to re-evaluate based on previous findings?"
 
-**General Reminder:** Your primary mechanism for suggesting scans (Nmap, Gobuster, Nikto, enum4linux-ng) is by invoking the corresponding **tool call** (`propose_nmap_scan`, `propose_gobuster_scan`, etc.). Do *not* just ask the user in plain text if they want to run a scan. Using the tool call allows the script to manage the confirmation and execution flow reliably.
+**General Reminder:** Your primary mechanism for suggesting scans (Nmap, Gobuster, Nikto, enum4linux-ng) is by invoking the corresponding **tool call** (`propose_nmap_scan`, `propose_gobuster_scan`, etc.) *after* you have provided the necessary pre-scan explanation in your message content. Do *not* just ask the user in plain text if they want to run a scan. Using the tool call allows the script to manage the confirmation and execution flow reliably.
 
-
-**General:** Be directive about the *next logical step*. Use the provided tools to propose scans. Let the script handle the user confirmation process *after* you propose a tool call. Analyze results provided back to you via the 'tool' role. Remember your limitations as an AI and always defer to the user for final decisions.
+**General:** Be directive about the *next logical step*. Use the provided tools to propose scans. Let the script handle the user confirmation process *after* you propose a tool call. Analyze results provided back to you via the 'tool' role, explaining them clearly to the beginner user. Remember your limitations as an AI and always defer to the user for final decisions on actions. **Prioritize helping the user understand the 'why' and the 'what next' over just executing commands.**
 """
 
 AGENT_WELCOME_MESSAGE = """
@@ -77,7 +116,7 @@ You can designate the target using a command structure like:
 * `analyze ctfbox.local`
 * `set target 192.168.30.125`
 
-Once the target coordinates are locked, we can begin the standard CTF procedure. I will propose reconnaissance probes (scans) when appropriate.
+Once the target coordinates are locked, I will explain our initial probing strategy and then propose reconnaissance probes (scans) when appropriate, explaining each step.
 
 **Reminder:** Operate strictly within the boundaries defined by the CTF organizers. Ethical conduct is paramount, even in simulations.
 
@@ -91,7 +130,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "propose_nmap_scan",
-            "description": "Propose running an Nmap scan on the target and ask the user for confirmation via the script.",
+            "description": "Propose running an Nmap scan on the target. The AI's preceding message content should explain WHY this scan and its arguments are being proposed. The script will then ask the user for confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -106,24 +145,23 @@ tools = [
         "type": "function",
         "function": {
             "name": "propose_gobuster_scan",
-            "description": "Propose running a Gobuster directory scan on a specific web port and ask the user for confirmation via the script.",
+            "description": "Propose running a Gobuster directory scan on a specific web port. The AI's preceding message content should explain WHY this scan is being proposed. The script will then ask for confirmation.",
                 "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "The target IP or domain."},
                     "port": {"type": "integer", "description": "The port number to scan (e.g., 80, 443)."},
-                    # Reference the default wordlist dynamically in the description
                     "wordlist": {"type": "string", "description": f"Optional: Specific wordlist path. If omitted, the script will use the default ({os.path.basename(DEFAULT_WORDLIST) if DEFAULT_WORDLIST else 'N/A'})."}
                 },
-                "required": ["target", "port"] # Wordlist is optional from LLM perspective
+                "required": ["target", "port"]
             }
         }
     },
-    { # Add Nikto Tool Definition
+    {
         "type": "function",
         "function": {
             "name": "propose_nikto_scan",
-            "description": "Propose running a Nikto web server vulnerability scan on a specific target and port, asking the user for confirmation via the script.",
+            "description": "Propose running a Nikto web server vulnerability scan on a specific target and port. The AI's preceding message content should explain WHY this scan is being proposed. The script will then ask for confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -135,11 +173,11 @@ tools = [
             }
         }
     },
-    { # Add enum4linux-ng Tool Definition
+    {
         "type": "function",
         "function": {
             "name": "propose_smb_enum",
-            "description": "Propose running enum4linux-ng for SMB enumeration (shares, users, etc.) on a target, asking the user for confirmation via the script.",
+            "description": "Propose running enum4linux-ng for SMB enumeration. The AI's preceding message content should explain WHY this scan is being proposed. The script will then ask for confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -150,17 +188,14 @@ tools = [
             }
         }
     }
-    # Add definitions for other tools like propose_nikto_scan here
 ]
 
 
 # --- LLM Interaction ---
 def get_llm_response(client, history, system_prompt):
     """Sends chat history to OpenAI API and returns the response message object."""
-    MAX_HISTORY_TURNS = 15 # Keep history reasonable
-    # Simple turn-based truncation (2 messages per turn: user, assistant/tool)
+    MAX_HISTORY_TURNS = 20 # Increased slightly to allow for more detailed exchanges
     if len(history) > MAX_HISTORY_TURNS * 2:
-        # Keep system prompt implicitly, trim middle history items
         history_to_send = history[-(MAX_HISTORY_TURNS * 2):]
         logging.info(f"Chat history truncated to last ~{MAX_HISTORY_TURNS} turns for API call.")
     else:
@@ -169,17 +204,15 @@ def get_llm_response(client, history, system_prompt):
     messages = [{'role': 'system', 'content': system_prompt}] + history_to_send
 
     try:
-        # Use the console object imported from config
         console.print("[yellow]Alien Recon is analyzing signals...[/yellow]", end="\r")
         response = client.chat.completions.create(
-            model="gpt-4o-mini", # Ensure this model supports tool calling well
+            model="gpt-4o-mini",
             messages=messages,
-            tools=tools,          # Pass defined tools from this module
-            tool_choice="auto",   # Let OpenAI decide when to use tools
-            temperature=0.6,      # Slightly lower temp for more deterministic tool use
+            tools=tools,
+            tool_choice="auto",
+            temperature=0.5, # Slightly lower for more predictable and focused guidance
         )
-        console.print(" " * 40, end="\r") # Clear the "analyzing" message
-        # Return the whole message object which contains content and/or tool_calls
+        console.print(" " * 40, end="\r")
         return response.choices[0].message
 
     except openai.AuthenticationError as e:
@@ -209,4 +242,4 @@ def get_llm_response(client, history, system_prompt):
         console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")
         return None
 
-
+    
