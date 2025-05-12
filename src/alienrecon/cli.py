@@ -1,11 +1,9 @@
 # src/alienrecon/cli.py
 import logging
+from typing import Optional
 
 import typer
-from rich.console import Console
-
-# This import will be added/used once SessionController is created and moved
-# from alienrecon.core.session import SessionController
+from rich.console import Console  # Keep rich.console for cli_console
 
 app = typer.Typer(
     name="alienrecon",
@@ -16,8 +14,8 @@ app = typer.Typer(
 )
 
 cli_console = Console()
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+module_logger = logging.getLogger(__name__)  # For CLI specific logs
 
 
 @app.callback()
@@ -32,7 +30,7 @@ def init():
 
 @app.command()
 def target(
-    target_address: str = typer.Argument(  # Keep as required
+    target_address: str = typer.Argument(
         ...,
         help="The IP address or domain name to target.",
     ),
@@ -46,8 +44,7 @@ def target(
 
 @app.command()
 def recon(
-    # Change str | None to Optional[str]
-    target_address: str | None = typer.Option(
+    target_address: Optional[str] = typer.Option(  # Important: Optional[str]
         None,
         "--target",
         "-t",
@@ -79,7 +76,6 @@ def recon(
             "  [bold]Specified Target:[/bold] [grey50]None (will use session "
             "target - TODO)[/grey50]"
         )
-
     cli_console.print(
         f"  [bold]Mode:[/bold] {'Automatic (TODO)' if auto else 'Interactive (TODO)'}"
     )

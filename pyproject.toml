@@ -52,6 +52,12 @@ select = ["E", "F", "W", "I", "UP"]
 # You might ignore specific rules if needed, e.g. E501 (line too long)
 # if you rely solely on the formatter for line length.
 # ignore = ["E501"]
+# Ignore specific rules
+ignore = [
+    "E501",  # If you want to manually handle all line lengths (but we fixed them)
+             # For now, let's ONLY add UP007
+    "UP007", # Do not upgrade Optional[X] to X | None
+]
 
 [tool.ruff.format]
 # Optional: Configuration for the formatter, if needed beyond line-length.
