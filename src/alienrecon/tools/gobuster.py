@@ -4,7 +4,7 @@ import os
 import re
 from typing import Any
 
-from ..config import DEFAULT_WORDLIST  # Import default wordlist from config
+from ..core.config import DEFAULT_WORDLIST  # Import default wordlist from config
 
 # Import base class and utilities
 from .base import CommandTool

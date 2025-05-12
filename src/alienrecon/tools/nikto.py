@@ -6,7 +6,7 @@ import shlex
 import tempfile
 from typing import Any
 
-from ..config import console  # Import console for potential direct printing
+from ..core.config import console  # Import console for potential direct printing
 
 # Import base class and utilities
 from .base import CommandTool, run_command

@@ -7,7 +7,7 @@ from typing import Any
 
 # Import console from config for run_command error printing
 # Use relative import '.' because base.py is inside the 'tools' sub-package
-from ..config import (
+from ..core.config import (
     TOOL_PATHS,
     console,
 )  # Removed check_tool import as it's not used here

@@ -4,9 +4,10 @@ import logging
 import os
 import shlex
 import tempfile
-from typing import Any
+from typing import Any, Union  # Added Union for type hint
 
-from ..config import console  # Import console and TOOL_PATHS
+# Ensure this path is correct if config.py is in alienrecon/core/
+from ..core.config import console
 
 # Import base class and utilities
 from .base import CommandTool, run_command
@@ -22,10 +23,9 @@ class SmbTool(CommandTool):
     description: str = (
         "Performs SMB enumeration (shares, users, policies, etc.) using enum4linux-ng."
     )
-    executable_name: str = "enum4linux-ng"  # Command-line executable
+    executable_name: str = "enum4linux-ng"
 
-    # Default arguments for enum4linux-ng
-    DEFAULT_ARGS = "-A"  # "-A" means run all simple enumeration modules
+    DEFAULT_ARGS = "-A"
 
     def build_command(
         self,
@@ -33,23 +33,6 @@ class SmbTool(CommandTool):
         enum_arguments: str | None = None,
         temp_file_base: str = None,
     ) -> list[str]:
-        """
-        Constructs the enum4linux-ng command arguments, ensuring JSON output.
-
-        Args:
-            target: The target IP address or hostname.
-            enum_arguments: User-provided enum4linux-ng arguments string
-                            (e.g., "-U -S"). Defaults to "-A" if None or empty.
-            temp_file_base: The base path for the temporary JSON output file
-                            (without extension).
-
-        Returns:
-            A list of strings for the enum4linux-ng command (excluding the
-            executable itself).
-
-        Raises:
-            ValueError: If target or temp_file_base is missing.
-        """
         if not target:
             raise ValueError("Target must be provided for enum4linux-ng.")
         if not temp_file_base:
@@ -58,13 +41,11 @@ class SmbTool(CommandTool):
             )
 
         args_to_use = enum_arguments or self.DEFAULT_ARGS
-        if not args_to_use.strip():  # Ensure arguments are not empty space
+        if not args_to_use.strip():
             args_to_use = self.DEFAULT_ARGS
             logging.warning(
                 "Empty enum4linux-ng arguments provided, using default '-A'."
             )
-
-        # Safely split the arguments string
         try:
             base_args = shlex.split(args_to_use)
         except ValueError as e:
@@ -72,20 +53,68 @@ class SmbTool(CommandTool):
                 f"Error splitting enum4linux-ng arguments '{args_to_use}': {e}. "
                 f"Using default '-A'."
             )
-            base_args = shlex.split(
-                self.DEFAULT_ARGS
-            )  # Fallback to default on split error
+            base_args = shlex.split(self.DEFAULT_ARGS)
 
-        # Ensure JSON output ('-oJ') is included and target is last
-        # Remove existing -oJ or -oA if present to avoid conflicts
-        filtered_args = [
-            arg for arg in base_args if not arg.startswith(("-oJ", "-oA"))
-        ]  # -oA writes all formats, -oJ just JSON
-
-        # Add '-oJ <temp_base>' and the target
+        filtered_args = [arg for arg in base_args if not arg.startswith(("-oJ", "-oA"))]
         command_args = filtered_args + ["-oJ", temp_file_base, target]
         logging.debug(f"Built enum4linux-ng command args: {command_args}")
         return command_args
+
+    def _parse_data_item(
+        self, data_item: Union[list, dict, None], max_items: int
+    ) -> tuple[list[dict[str, Any]], bool, int]:
+        """
+        Helper to parse an item that could be a list or a dict (or other types)
+        from enum4linux-ng JSON output, limiting the number of returned elements.
+        """
+        result_list = []
+        original_count = 0
+        truncated = False
+
+        if isinstance(data_item, list):
+            original_count = len(data_item)
+            for item in data_item[:max_items]:
+                if isinstance(item, dict):
+                    result_list.append(item)
+                elif isinstance(item, str):  # e.g. simple list of usernames
+                    result_list.append(
+                        {"name": item}
+                    )  # Convert to dict for consistency
+                else:  # Other non-dict items in a list
+                    result_list.append({"raw_data": item})
+            if original_count > max_items:
+                truncated = True
+        elif isinstance(data_item, dict):
+            # If it's a dictionary, we might want to convert its items to a list of dicts
+            # The structure of this dict can vary (e.g., users by RID, shares by name)
+            # For simplicity, we'll try to make each entry a dict.
+            # This part may need further refinement based on actual JSON structures.
+            original_count = len(data_item)
+            items_processed = 0
+            for key, value in data_item.items():
+                if items_processed >= max_items:
+                    truncated = True
+                    break
+                if isinstance(value, dict):
+                    # If value is a dict, try to add 'name' or 'id' field from key
+                    entry = value.copy()
+                    if "name" not in entry and "id" not in entry:  # Avoid overwriting
+                        entry["id_or_key"] = key
+                    result_list.append(entry)
+                elif isinstance(value, str):
+                    result_list.append({"id_or_key": key, "value": value})
+                else:
+                    result_list.append({"id_or_key": key, "raw_value": value})
+                items_processed += 1
+        elif data_item is not None:  # Some other unexpected type
+            logging.warning(
+                f"Data item expected to be list or dict, got {type(data_item)}. "
+                "Storing as raw."
+            )
+            result_list.append({"raw_data_item": data_item})
+            original_count = 1
+
+        return result_list, truncated, original_count
 
     def parse_output(
         self,
@@ -94,23 +123,8 @@ class SmbTool(CommandTool):
         parsed_json_data: dict[str, Any] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
-        """
-        Parses the JSON data obtained from enum4linux-ng's output file.
-
-        Args:
-            stdout: Raw standard output from enum4linux-ng (might be minimal
-                    with -oJ).
-            stderr: Standard error output (contains execution errors or warnings).
-            parsed_json_data: The dictionary loaded from the enum4linux-ng JSON
-                              output file.
-            **kwargs: Original arguments passed to execute (target, enum_arguments).
-
-        Returns:
-            A dictionary containing the parsed scan results or error information.
-        """
         target_context = kwargs.get("target", "Unknown Target")
         scan_summary = f"SMB Enumeration (enum4linux-ng) results for {target_context}:"
-        # Mimic structure of old format_smb_enum_results
         findings = {
             "summary": {},
             "os_info": {},
@@ -120,147 +134,124 @@ class SmbTool(CommandTool):
             "password_policy": {},
             "sessions": [],
             "printers": [],
+            "domains": [],
+            "misc": {},  # Added domains and misc for flexibility
         }
-        max_list_items = 20  # Limit list items in results
+        max_list_items = 20
 
-        # Case 1: Execution failed significantly (stderr and no JSON data)
         if stderr and not parsed_json_data:
             scan_summary = (
                 f"SMB Enumeration for {target_context} failed or produced no "
                 f"usable output."
             )
-            findings["error"] = stderr
+            findings["error"] = stderr.strip() if stderr else "Unknown execution error"
             return {"scan_summary": scan_summary, "findings": findings}
 
-        # Case 2: Execution completed, but there might be warnings in stderr
         if stderr:
             scan_summary += " Scan completed with potential warnings."
-            # Include stderr as a warning in the findings summary
             findings["summary"]["warnings"] = stderr.strip()
 
-        # Case 3: No JSON data returned even if stderr is empty (unexpected)
         if not parsed_json_data:
-            if not stderr:  # If stderr was also empty, something odd happened
-                error_msg = "Enum4linux-ng ran but produced no JSON data and no errors."
-                logging.warning(f"{error_msg} Target: {target_context}")
+            error_msg = "Enum4linux-ng ran but produced no JSON data."
+            if "warnings" not in findings["summary"] and not findings.get("error"):
                 findings["error"] = error_msg
-            # If stderr *was* present, it's already handled above.
+            logging.warning(f"{error_msg} Target: {target_context}")
             scan_summary += " No data returned from scan."
             return {"scan_summary": scan_summary, "findings": findings}
 
-        # Case 4: We have JSON data, proceed with parsing
         try:
-            data = parsed_json_data  # Use the pre-parsed JSON
+            data = parsed_json_data
 
-            # Extract summary flags
             findings["summary"]["rid_cycling_used"] = data.get(
                 "rid_cycling_used", False
             )
             findings["summary"]["rpcclient_used"] = data.get("rpcclient_used", False)
+            findings["summary"]["lookupsid_used"] = data.get("lookupsid_used", False)
 
-            # Extract OS Info
             os_info_raw = data.get("osinfo", {})
             if isinstance(os_info_raw, dict):
                 findings["os_info"]["os_version"] = os_info_raw.get("os_version_guess")
                 findings["os_info"]["server_name"] = os_info_raw.get("server_name")
                 findings["os_info"]["workgroup"] = os_info_raw.get("workgroup")
+                findings["os_info"]["domain"] = os_info_raw.get(
+                    "domain_name"
+                )  # Common field
+                findings["os_info"]["fqdn"] = os_info_raw.get("fqdn")
                 findings["os_info"]["smb_negotiation"] = os_info_raw.get(
                     "smb_negotiation"
                 )
-            elif os_info_raw:  # If present but not a dict
-                findings["os_info"]["raw_os_info"] = os_info_raw
+            elif os_info_raw:
+                findings["os_info"]["raw_os_info"] = str(os_info_raw)
 
-            # Helper to extract and limit lists from the JSON data
-            def extract_limited_list(key, max_items):
-                raw_list = data.get(key)
-                truncated = False
-                result_list = []
-                original_count = 0
-                if isinstance(raw_list, list):
-                    original_count = len(raw_list)
-                    result_list = raw_list[:max_items]
-                    if original_count > max_items:
-                        truncated = True
-                elif raw_list is not None:  # Handle unexpected type
-                    logging.warning(
-                        f"Expected '{key}' to be a list in enum4linux-ng JSON, "
-                        f"got {type(raw_list)}. Storing raw."
+            # Map keys from enum4linux-ng JSON to our findings structure
+            # and parse them using the helper
+            key_map = {
+                "users": "users",
+                "groups": "groups",  # Often local groups
+                "domaingroups": "groups",  # Append domain groups to 'groups'
+                "shares": "shares",
+                "sessions": "sessions",
+                "printers": "printers",
+                "domains": "domains",  # if separate domain info is provided
+            }
+
+            for json_key, findings_key in key_map.items():
+                data_item = data.get(json_key)
+                parsed_items, truncated, count = self._parse_data_item(
+                    data_item, max_list_items
+                )
+
+                if findings_key == "groups" and json_key == "domaingroups":  # Append
+                    findings[findings_key].extend(parsed_items)
+                else:
+                    findings[findings_key] = parsed_items  # Overwrite/set
+
+                if truncated:
+                    findings["summary"][f"{findings_key}_truncated"] = (
+                        f"True (showing up to {len(parsed_items)}/{count})"
                     )
-                    result_list = [
-                        {"raw_data": raw_list}
-                    ]  # Wrap in list/dict for consistency
-                    original_count = 1  # Treat as one item
-                return result_list, truncated, original_count
 
-            # Extract Users, Groups, Sessions, Printers
-            findings["users"], truncated, count = extract_limited_list(
-                "users", max_list_items
-            )
-            if truncated:
-                findings["summary"]["users_truncated"] = (
-                    f"True (showing {max_list_items}/{count})"
-                )
-            findings["groups"], truncated, count = extract_limited_list(
-                "groups", max_list_items
-            )
-            if truncated:
-                findings["summary"]["groups_truncated"] = (
-                    f"True (showing {max_list_items}/{count})"
-                )
-            findings["sessions"], truncated, count = extract_limited_list(
-                "sessions", max_list_items
-            )
-            if truncated:
-                findings["summary"]["sessions_truncated"] = (
-                    f"True (showing {max_list_items}/{count})"
-                )
-            findings["printers"], truncated, count = extract_limited_list(
-                "printers", max_list_items
-            )
-            if truncated:
-                findings["summary"]["printers_truncated"] = (
-                    f"True (showing {max_list_items}/{count})"
-                )
-
-            # Extract Shares (with filtering)
-            all_shares, _, original_share_count = extract_limited_list(
-                "shares", max_list_items * 2
-            )  # Get more initially for filtering
+            # Special handling for shares to filter out IPC$/ADMIN$ by default
+            raw_shares = findings.get("shares", [])
             filtered_shares = []
-            ignored_shares = ["IPC$", "ADMIN$"]  # Common admin shares to ignore
-            share_count = 0
-            truncated_shares = False
-            for share in all_shares:
-                # Check if it's dict and has a name not in ignore list
-                if isinstance(share, dict) and share.get("name") not in ignored_shares:
-                    if share_count < max_list_items:
-                        filtered_shares.append(share)
-                        share_count += 1
-                    else:
-                        truncated_shares = True
-                        break
-                # Handle non-dict items or include ignored shares if needed
-                elif not isinstance(share, dict) and share:
-                    if share_count < max_list_items:
-                        filtered_shares.append({"raw_share_data": share})
-                        share_count += 1
-                    else:
-                        truncated_shares = True
-                        break
-
+            ignored_shares = [
+                "IPC$",
+                "ADMIN$",
+            ]  # Common admin shares to ignore by default
+            for share_info in raw_shares:
+                share_name = share_info.get(
+                    "name", share_info.get("id_or_key", "")
+                ).upper()  # Check both possible keys
+                if share_name not in ignored_shares:
+                    filtered_shares.append(share_info)
             findings["shares"] = filtered_shares
-            if truncated_shares or (
-                original_share_count > len(filtered_shares) and not truncated_shares
-            ):
-                findings["summary"]["shares_truncated_or_filtered"] = (
-                    f"True (showing {len(filtered_shares)}/{original_share_count} "
-                    f"total, filtered & limited)"
+            if len(raw_shares) > len(filtered_shares):
+                findings["summary"]["shares_filtered"] = (
+                    "True (filtered out common admin shares like IPC$, ADMIN$)"
                 )
 
-            # Extract Password Policy
-            findings["password_policy"] = data.get("passwordpolicy", {})
+            # Password Policy
+            pwpolicy_data = data.get("passwordpolicy", {})
+            if isinstance(pwpolicy_data, dict) and pwpolicy_data:
+                findings["password_policy"] = pwpolicy_data
+            elif (
+                pwpolicy_data
+            ):  # if it's non-empty but not a dict (e.g., a string error message)
+                findings["password_policy"] = {"raw_policy_data": str(pwpolicy_data)}
+
+            # Other misc info if present
+            if "netinfo" in data:
+                findings["misc"]["netinfo"] = data["netinfo"]
+            if "sidinfo" in data:
+                findings["misc"]["sidinfo"] = data["sidinfo"]
 
             scan_summary += " Key findings extracted."
+            if not any(
+                findings[k]
+                for k in ["users", "groups", "shares", "password_policy", "os_info"]
+                if findings[k]
+            ):
+                scan_summary += " No detailed SMB information found or parsed."
 
         except Exception as e:
             logging.error(
@@ -269,33 +260,20 @@ class SmbTool(CommandTool):
             )
             scan_summary += " (Error occurred during results processing)."
             findings["processing_error"] = str(e)
-            # Include a sample of the raw JSON if parsing failed
             findings["raw_data_sample"] = (
                 str(parsed_json_data)[:500] if parsed_json_data else "N/A"
             )
 
-        # Final structure
         result_dict = {"scan_summary": scan_summary, "findings": findings}
         return result_dict
 
     def execute(self, **kwargs) -> dict[str, Any]:
-        """
-        Executes enum4linux-ng, handles temporary file creation/cleanup,
-        and parses the JSON output. Overrides the base execute method.
-
-        Args:
-            **kwargs: Arguments expected by build_command (target, enum_arguments).
-
-        Returns:
-            A dictionary containing the parsed results from parse_output.
-        """
         if not self.executable_path:
             err_msg = (
                 f"Tool '{self.name}' ({self.executable_name}) cannot be executed "
                 f"because it was not found in PATH."
             )
             logging.error(err_msg)
-            # Ensure findings key exists even on early failure
             return {
                 "scan_summary": f"{self.name.capitalize()} execution failed.",
                 "error": err_msg,
@@ -304,27 +282,20 @@ class SmbTool(CommandTool):
 
         temp_file_base = None
         expected_json_path = None
-        command_args = []  # Initialize in outer scope
+        command_args = []
 
         try:
-            # 1. Create a temporary file base name safely
-            # Use delete=False so we control deletion in the finally block
             with tempfile.NamedTemporaryFile(
                 mode="w", delete=False, suffix=".json"
             ) as tmpfile:
                 full_temp_name = tmpfile.name
-                # enum4linux-ng needs the base name (without .json) for -oJ
                 temp_file_base = full_temp_name.replace(".json", "")
-                expected_json_path = full_temp_name  # Store the full path
+                expected_json_path = full_temp_name
 
-            # 2. Build the command using the temporary base name
             command_args = self.build_command(temp_file_base=temp_file_base, **kwargs)
             command = [self.executable_path] + command_args
 
-        except (
-            ValueError,
-            FileNotFoundError,
-        ) as e:  # Catch specific errors from build_command or tempfile issues
+        except (ValueError, FileNotFoundError) as e:
             err_msg = f"Error preparing command for {self.name}: {e}"
             logging.error(err_msg)
             return {
@@ -332,10 +303,9 @@ class SmbTool(CommandTool):
                 "error": err_msg,
                 "findings": {},
             }
-        except Exception as e:  # Catch unexpected errors during setup
+        except Exception as e:
             err_msg = f"Unexpected error preparing command for {self.name}: {e}"
             logging.error(err_msg, exc_info=True)
-            # Clean up temp file if it was created before the error
             if expected_json_path and os.path.exists(expected_json_path):
                 try:
                     os.remove(expected_json_path)
@@ -355,18 +325,13 @@ class SmbTool(CommandTool):
         stderr = None
 
         try:
-            # 3. Run the command
             target_display = kwargs.get("target", "unknown target")
             console.print(
                 f"[yellow]Initiating {self.name} probe on {target_display} "
                 f"(Args: {' '.join(command_args)})...[/yellow]"
             )
-            # No spinner here to keep base execute simple
-            stdout, stderr = run_command(
-                command
-            )  # stderr contains error details if run failed
+            stdout, stderr = run_command(command)
 
-            # 4. Attempt to read the JSON output file
             if expected_json_path and os.path.exists(expected_json_path):
                 if os.path.getsize(expected_json_path) > 0:
                     try:
@@ -381,77 +346,63 @@ class SmbTool(CommandTool):
                             f"{json_err}"
                         )
                         logging.error(err_msg)
-                        # If run_command didn't report error, make this primary
-                        if not stderr:
-                            stderr = err_msg
-                        else:
-                            stderr += f"; {err_msg}"  # Append error
+                        stderr = f"{stderr or ''}; {err_msg}".strip("; ")
                     except Exception as read_err:
                         err_msg = (
                             f"Failed to read JSON file {expected_json_path}: {read_err}"
                         )
                         logging.error(err_msg)
-                        if not stderr:
-                            stderr = err_msg
-                        else:
-                            stderr += f"; {err_msg}"
-                else:
+                        stderr = f"{stderr or ''}; {err_msg}".strip("; ")
+                else:  # Empty JSON file
                     warn_msg = (
                         f"Enum4linux-ng created an empty JSON file: "
                         f"{expected_json_path}"
                     )
                     logging.warning(warn_msg)
-                    # Treat as warning unless stderr is also empty
                     if not stderr:
-                        stderr = warn_msg  # Promote to error if no other error
-            else:
-                # If command didn't fail catastrophically but file is missing
-                if not stderr:
-                    error_msg = (
-                        f"Enum4linux-ng completed but expected JSON file was "
-                        f"not found: {expected_json_path}"
-                    )
-                    logging.error(error_msg)
-                    stderr = error_msg  # Make this the error
+                        stderr = warn_msg
+            elif not stderr:  # File not found and no other error
+                error_msg = (
+                    f"Enum4linux-ng completed but expected JSON file was "
+                    f"not found: {expected_json_path}"
+                )
+                logging.error(error_msg)
+                stderr = error_msg
 
-            # 5. Parse the results (pass the loaded JSON data)
-            # Pass original kwargs for context like target
             parsed_results = self.parse_output(
                 stdout, stderr, parsed_json_data=parsed_json_data, **kwargs
             )
             return parsed_results
 
         except Exception as e:
-            # Catch unexpected errors during execution or parsing call
-            err_msg = f"Unexpected error during execution/parsing for {self.name}: {e}"
+            err_msg = f"Unexpected error during {self.name} execution/parsing: {e}"
             logging.error(err_msg, exc_info=True)
             return {
-                "scan_summary": f"{self.name.capitalize()} execution/parsing failed.",
+                "scan_summary": f"{self.name.capitalize()} process failed.",
                 "error": err_msg,
                 "raw_stdout": stdout[:500] if stdout else None,
                 "raw_stderr": stderr[:500] if stderr else None,
-                "findings": {},  # Ensure findings key exists
+                "findings": {},
             }
         finally:
-            # 6. Clean up temporary files
             if expected_json_path and os.path.exists(expected_json_path):
                 try:
                     os.remove(expected_json_path)
-                    logging.debug(f"Removed temporary JSON file: {expected_json_path}")
                 except OSError as e:
                     logging.warning(
-                        f"Could not remove temporary JSON file "
-                        f"{expected_json_path}: {e}"
+                        f"Could not remove temp JSON {expected_json_path}: {e}"
                     )
-            # enum4linux-ng might create other files based on the base name
-            if temp_file_base and os.path.exists(temp_file_base):
+            if temp_file_base and os.path.exists(
+                temp_file_base
+            ):  # Might be a dir if -oA used
                 try:
-                    os.remove(temp_file_base)
-                    logging.debug(f"Removed temporary base file: {temp_file_base}")
+                    if os.path.isfile(temp_file_base):
+                        os.remove(temp_file_base)
+                    # elif os.path.isdir(temp_file_base): shutil.rmtree(temp_file_base) # If -oA used
                 except OSError as e:
-                    # This might fail if it's a directory, which is fine
-                    if not os.path.isdir(temp_file_base):
+                    if not os.path.isdir(
+                        temp_file_base
+                    ):  # Don't warn if it was a dir for -oA
                         logging.warning(
-                            f"Could not remove temporary base file "
-                            f"{temp_file_base}: {e}"
+                            f"Could not remove temp base {temp_file_base}: {e}"
                         )
