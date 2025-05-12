@@ -1,17 +1,23 @@
 # alienrecon/tools/base.py
-import os # Added os import for basename
 import logging
+import os  # Added os import for basename
 import subprocess
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any
 
 # Import console from config for run_command error printing
 # Use relative import '.' because base.py is inside the 'tools' sub-package
-from ..config import console, TOOL_PATHS, check_tool # Removed check_tool import as it's not used here
+from ..config import (
+    TOOL_PATHS,
+    console,
+)  # Removed check_tool import as it's not used here
+
 
 # --- Helper Function (Moved from main.py) ---
 # This function is generic for running any command-line tool.
-def run_command(command_list: List[str], timeout: int = 600) -> Tuple[Optional[str], Optional[str]]:
+def run_command(
+    command_list: list[str], timeout: int = 600
+) -> tuple[str | None, str | None]:
     """
     Executes an external command and captures its stdout and stderr.
 
@@ -28,25 +34,36 @@ def run_command(command_list: List[str], timeout: int = 600) -> Tuple[Optional[s
     if not command_list:
         return None, "Empty command list provided."
 
-    executable_name = os.path.basename(command_list[0]) # Get the tool name for logging
+    executable_name = os.path.basename(command_list[0])  # Get tool name for logging
     logging.info(f"Executing command: {' '.join(command_list)}")
     try:
         result = subprocess.run(
             command_list,
             capture_output=True,
             text=True,
-            check=False, # Don't raise exception on non-zero exit code
-            timeout=timeout
+            check=False,  # Don't raise exception on non-zero exit code
+            timeout=timeout,
         )
         if result.returncode != 0:
-            stderr_output = result.stderr.strip() if result.stderr else f"{executable_name} exited with status {result.returncode}"
-            logging.warning(f"Command '{executable_name}' failed. Return Code: {result.returncode}. Stderr: {stderr_output}")
-            # Return stdout even on failure, it might contain partial info or error details
+            stderr_output = (
+                result.stderr.strip()
+                if result.stderr
+                else f"{executable_name} exited with status {result.returncode}"
+            )
+            logging.warning(
+                f"Command '{executable_name}' failed. Return Code: "
+                f"{result.returncode}. Stderr: {stderr_output}"
+            )
+            # Return stdout even on failure, it might contain partial info
+            # or error details
             return result.stdout.strip() if result.stdout else None, stderr_output
         # Success case: return stdout and None for error
         return result.stdout.strip() if result.stdout else "", None
     except FileNotFoundError:
-        err_msg = f"Command not found: '{command_list[0]}'. Ensure '{executable_name}' is installed and in PATH."
+        err_msg = (
+            f"Command not found: '{command_list[0]}'. Ensure "
+            f"'{executable_name}' is installed and in PATH."
+        )
         logging.error(err_msg)
         console.print(f"[bold red]Error: {err_msg}[/bold red]")
         return None, err_msg
@@ -57,7 +74,9 @@ def run_command(command_list: List[str], timeout: int = 600) -> Tuple[Optional[s
         return None, err_msg
     except Exception as e:
         err_msg = f"Error running command {' '.join(command_list)}: {e}"
-        logging.error(err_msg, exc_info=True) # Log full traceback for unexpected errors
+        logging.error(
+            err_msg, exc_info=True
+        )  # Log full traceback for unexpected errors
         console.print(f"[bold red]Error: {err_msg}[/bold red]")
         return None, err_msg
 
@@ -68,10 +87,11 @@ class CommandTool(ABC):
     Abstract base class for command-line tools integrated with Alien Recon.
     Each specific tool (Nmap, Gobuster, etc.) should inherit from this class.
     """
+
     # Class attributes to be overridden by subclasses
-    name: str = "UnnamedTool" # Short name, e.g., "nmap", "gobuster"
-    description: str = "No description provided." # Brief description for help/logging
-    executable_name: str = "" # The actual command name (e.g., "nmap", "gobuster")
+    name: str = "UnnamedTool"  # Short name, e.g., "nmap", "gobuster"
+    description: str = "No description provided."  # Brief description for help/logging
+    executable_name: str = ""  # The actual command name (e.g., "nmap", "gobuster")
 
     def __init__(self):
         """
@@ -79,11 +99,13 @@ class CommandTool(ABC):
         """
         self.executable_path = TOOL_PATHS.get(self.executable_name)
         if not self.executable_path:
-            logging.warning(f"Executable '{self.executable_name}' for tool '{self.name}' not found in PATH.")
-
+            logging.warning(
+                f"Executable '{self.executable_name}' for tool '{self.name}' "
+                f"not found in PATH."
+            )
 
     @abstractmethod
-    def build_command(self, **kwargs) -> List[str]:
+    def build_command(self, **kwargs) -> list[str]:
         """
         Constructs the command-line arguments for the tool based on input parameters.
 
@@ -102,7 +124,9 @@ class CommandTool(ABC):
         pass
 
     @abstractmethod
-    def parse_output(self, stdout: Optional[str], stderr: Optional[str], **kwargs) -> Dict[str, Any]:
+    def parse_output(
+        self, stdout: str | None, stderr: str | None, **kwargs
+    ) -> dict[str, Any]:
         """
         Parses the raw stdout and stderr from the tool's execution into a
         structured JSON-serializable dictionary suitable for the LLM.
@@ -118,11 +142,12 @@ class CommandTool(ABC):
         Returns:
             A dictionary containing the parsed results and a summary.
             Example: {"scan_summary": "Nmap scan completed...", "findings": [...]}
-                     or {"scan_summary": "Nmap scan failed.", "error": "...", "findings": []}
+                     or {"scan_summary": "Nmap scan failed.", "error": "...",
+                         "findings": []}
         """
         pass
 
-    def execute(self, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> dict[str, Any]:
         """
         Executes the tool's command and returns the parsed results.
         This method orchestrates the build->run->parse workflow.
@@ -134,38 +159,56 @@ class CommandTool(ABC):
             A dictionary containing the parsed results from parse_output.
         """
         if not self.executable_path:
-             err_msg = f"Tool '{self.name}' ({self.executable_name}) cannot be executed because it was not found in PATH."
-             logging.error(err_msg)
-             return {"scan_summary": f"{self.name.capitalize()} execution failed.", "error": err_msg, "findings": []}
+            err_msg = (
+                f"Tool '{self.name}' ({self.executable_name}) cannot be "
+                f"executed because it was not found in PATH."
+            )
+            logging.error(err_msg)
+            return {
+                "scan_summary": f"{self.name.capitalize()} execution failed.",
+                "error": err_msg,
+                "findings": [],
+            }
 
         try:
             command_args = self.build_command(**kwargs)
-            command = [self.executable_path] + command_args # Prepend executable path
-        except (ValueError, FileNotFoundError) as e: # Catch specific errors from build_command
+            command = [self.executable_path] + command_args  # Prepend executable path
+        except (
+            ValueError,
+            FileNotFoundError,
+        ) as e:  # Catch specific errors from build_command
             err_msg = f"Error building command for {self.name}: {e}"
             logging.error(err_msg)
-            return {"scan_summary": f"{self.name.capitalize()} command build failed.", "error": err_msg, "findings": []}
-        except Exception as e: # Catch unexpected errors
+            return {
+                "scan_summary": f"{self.name.capitalize()} command build failed.",
+                "error": err_msg,
+                "findings": [],
+            }
+        except Exception as e:  # Catch unexpected errors
             err_msg = f"Unexpected error building command for {self.name}: {e}"
             logging.error(err_msg, exc_info=True)
-            return {"scan_summary": f"{self.name.capitalize()} command build failed.", "error": err_msg, "findings": []}
+            return {
+                "scan_summary": f"{self.name.capitalize()} command build failed.",
+                "error": err_msg,
+                "findings": [],
+            }
 
         # Run the command using the helper function
-        stdout, stderr = run_command(command) # stderr contains error details if run failed
+        stdout, stderr = run_command(
+            command
+        )  # stderr contains error details if run failed
 
         # Parse the output using subclass logic, passing original kwargs for context
         try:
             parsed_results = self.parse_output(stdout, stderr, **kwargs)
             return parsed_results
         except Exception as e:
-             err_msg = f"Error parsing output for {self.name}: {e}"
-             logging.error(err_msg, exc_info=True)
-             return {
-                 "scan_summary": f"{self.name.capitalize()} output parsing failed.",
-                 "error": err_msg,
-                 "raw_stdout": stdout[:500] if stdout else None,
-                 "raw_stderr": stderr[:500] if stderr else None,
-                 "findings": []
-             }
-
-
+            err_msg = f"Error parsing output for {self.name}: {e}"
+            logging.error(err_msg, exc_info=True)
+            return {
+                "scan_summary": f"{self.name.capitalize()} output parsing failed.",
+                "error": err_msg,
+                "raw_stdout": stdout[:500] if stdout else None,
+                "raw_stderr": stderr[:500] if stderr else None,
+                "findings": [],
+            }

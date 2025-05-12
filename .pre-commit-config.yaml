@@ -1,0 +1,26 @@
+
+# a37/.pre-commit-config.yaml
+
+repos:
+# Standard hooks for checking file integrity
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0 # Use a recent version
+  hooks:
+    - id: check-yaml
+    - id: check-toml
+    - id: end-of-file-fixer
+    - id: trailing-whitespace
+
+# Ruff for linting AND formatting (replaces black, isort, flake8, etc.)
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  # Find the latest ruff version from: https://github.com/astral-sh/ruff-pre-commit/releases
+  # Make sure the rev matches the ruff version in your pyproject.toml if possible,
+  # or use the latest stable release from the ruff-pre-commit repo.
+  # Using a direct tag like 'v0.11.9' is often more stable than using 'main'.
+  rev: v0.11.9 # Check for the latest release tag matching your needs
+  hooks:
+    # Run the linter.
+    - id: ruff
+      args: [--fix, --exit-non-zero-on-fix] # Automatically fix what it can
+    # Run the formatter.
+    - id: ruff-format
