@@ -17,40 +17,26 @@ app = typer.Typer(
 
 cli_console = Console()
 
-# Basic logging for the CLI module itself.
-# More sophisticated logging will be handled by SessionController or a
-# dedicated logging setup.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 @app.callback()
 def main_callback(ctx: typer.Context):
-    """
-    Alien Recon AI Assistant.
-    Base command, context setup happens here if needed by all subcommands.
-    """
     pass
 
 
 @app.command()
 def init():
-    """
-    Initialize Alien Recon workspace or a specific CTF challenge (Planned).
-    """
     cli_console.print("[cyan]TODO: Initialize Alien Recon workspace.[/cyan]")
 
 
 @app.command()
 def target(
-    target_address: str = typer.Argument(
+    target_address: str = typer.Argument(  # Keep as required
         ...,
         help="The IP address or domain name to target.",
     ),
 ):
-    """
-    Set or update the primary target for the current session.
-    (Note: This command will interact with SessionController once implemented)
-    """
     cli_console.print(f"[green]Target set to:[/green] {target_address}")
     cli_console.print(
         "[grey50](This currently only notes the target. "
@@ -60,6 +46,7 @@ def target(
 
 @app.command()
 def recon(
+    # Change str | None to Optional[str]
     target_address: str | None = typer.Option(
         None,
         "--target",
@@ -84,9 +71,6 @@ def recon(
         ),
     ),
 ):
-    """
-    Start reconnaissance on the current or specified target.
-    """
     cli_console.print("[yellow]Reconnaissance Parameters:[/yellow]")
     if target_address:
         cli_console.print(f"  [bold]Specified Target:[/bold] {target_address}")
@@ -103,39 +87,6 @@ def recon(
         f"  [bold]Guidance:[/bold] {'Novice' if novice_mode else 'Expert'}"
     )
     cli_console.print("-" * 30)
-
-    # Placeholder for SessionController logic:
-    #
-    # try:
-    #     sc = SessionController()
-    # except RuntimeError as e:
-    #     cli_console.print(f"[bold red]Initialization Error: {e}[/bold red]")
-    #     raise typer.Exit(code=1)
-    #
-    # effective_target = target_address or sc.get_current_target()
-    # if not effective_target:
-    #     cli_console.print(
-    #         "[bold red]Error: No target specified or set. Use --target "
-    #         "<address> or the 'target' command.[/bold red]"
-    #      )
-    #     raise typer.Exit(code=1)
-    #
-    # sc.set_target(effective_target)
-    # sc.set_novice_mode(novice_mode)
-    #
-    # if auto:
-    #     cli_console.print(
-    #         f"[cyan]Starting [bold]auto[/bold] reconnaissance on: "
-    #         f"{effective_target}[/cyan]"
-    #     )
-    #     # sc.start_auto_recon()
-    # else:
-    #     cli_console.print(
-    #         f"[cyan]Starting [bold]interactive[/bold] reconnaissance on: "
-    #         f"{effective_target}[/cyan]"
-    #     )
-    #     # sc.start_interactive_recon()
-    #
     cli_console.print(
         "[bold magenta]TODO: Implement SessionController integration and "
         "recon logic.[/bold magenta]"
