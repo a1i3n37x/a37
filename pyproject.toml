@@ -10,15 +10,13 @@ repository = "https://github.com/a1i3n37x/a37"
 keywords = ["ctf", "hacking", "security", "ai", "reconnaissance", "pentesting", "cybersecurity"]
 
 [tool.poetry.dependencies]
-python = ">=3.11" # From your original [project] section
-
-# Dependencies from your original [project] section, formatted for poetry
-# and ensuring 'typer[all]' and adding 'httpx'
+python = ">=3.11"
 openai = ">=1.78.1,<2.0.0"
-rich = ">=14.0.0,<15.0.0"
+rich = ">=10.0.0"  # <--- Make rich very flexible for now
 python-dotenv = ">=1.1.0,<2.0.0"
-typer = {extras = ["all"], version = ">=0.15.3,<0.16.0"}
-httpx = "^0.27.0" # Standard HTTP client, often used by openai or for other API calls
+typer = {extras = ["all"], version = "^0.9.0"} # <--- Try with caret, aiming for latest 0.9.x
+httpx = "^0.27.0"
+click = "<8.2.0"
 
 [tool.poetry.group.dev.dependencies]
 # Your existing dev dependencies + pytest-cov
@@ -77,3 +75,6 @@ ignore_missing_imports = true
 
 # --- Show error codes for easier ignoring if needed ---
 show_error_codes = true
+
+[tool.poetry.scripts]
+alienrecon = "alienrecon.cli:app"
