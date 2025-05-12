@@ -1,0 +1,71 @@
+name: Alien Recon CI
+
+# Controls when the workflow will run
+on:
+  push:
+    branches: [ main ] # Or your default branch name, e.g., master
+  pull_request:
+    branches: [ main ] # Or your default branch name
+
+jobs:
+  lint-and-test: # Combined job for linting, formatting, and (soon) testing
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+
+    strategy:
+      matrix:
+        # Run the job for the Python version your project targets
+        python-version: [ "3.11" ] # Matches your pyproject.toml requires-python
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Check out repository
+        uses: actions/checkout@v4 # Use a recent version of the checkout action
+
+      # Step 2: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5 # Use a recent version
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Step 3: Install Poetry
+      # It's often better to install Poetry using the official installer for CI
+      - name: Install Poetry
+        uses: snok/install-poetry@v1 # Official-ish action for installing Poetry
+        with:
+          virtualenvs-create: true # Recommended to create virtual envs
+          virtualenvs-in-project: true # Creates .venv in project dir, easier to cache
+          installer-parallel: true
+
+      # Step 4: Load cached Poetry environment if available (speeds up builds)
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv # Path to Poetry's virtual environment
+          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+
+      # Step 5: Install dependencies using Poetry
+      # Only runs if cache was not hit or is outdated
+      - name: Install dependencies
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root --all-extras
+
+      # Step 6: Install the project itself (if needed for tools like pytest to find it)
+      # This is run even if cache is hit, as the project code might change.
+      - name: Install project
+        run: poetry install --no-interaction --all-extras # Installs current project into venv
+
+      # Step 7: Run linters and formatters using pre-commit
+      # This ensures the code adheres to styling and catches basic errors
+      # We run pre-commit directly here instead of relying on git hooks in CI
+      - name: Lint and Format Check with pre-commit
+        run: |
+          poetry run pre-commit install # Ensure hooks are 'installed' for the tool
+          poetry run pre-commit run --all-files --show-diff-on-failure
+
+      # Step 8: Run tests (placeholder for now, will be expanded in Phase 2)
+      # - name: Test with pytest
+      #   run: |
+      #     poetry run pytest --cov=src/alienrecon tests/
