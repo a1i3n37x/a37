@@ -193,11 +193,6 @@ class CommandTool(ABC):
         # Run the command using the helper function
         stdout, stderr = run_command(command)
 
-        # Run the command using the helper function
-        stdout, stderr = run_command(
-            command
-        )  # stderr contains error details if run failed
-
         # Parse the output using subclass logic, passing original kwargs for context
         try:
             parsed_results = self.parse_output(stdout, stderr, **kwargs)
