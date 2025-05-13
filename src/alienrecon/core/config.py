@@ -8,10 +8,10 @@ import openai
 from dotenv import load_dotenv
 from rich.console import Console
 
-# --- Basic Setup ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# BasicConfig is now handled by cli.py's main_callback
+# logging.basicConfig(
+#     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+# )
 console = Console()
 load_dotenv()
 
@@ -22,25 +22,19 @@ if not API_KEY:
         "[bold red]Error: OPENAI_API_KEY not found in .env file or "
         "environment variables.[/bold red]"
     )
-    sys.exit(1)  # Keep this exit for critical missing API key
+    sys.exit(1)
 
 # --- Default Wordlist Configuration ---
-# Option 1: Get from environment variable first, then fallback to a hardcoded default.
-# This avoids command-line argument parsing at import time.
 DEFAULT_WORDLIST_PATH_ENV = os.getenv("ALIENRECON_WORDLIST")
 DEFAULT_WORDLIST = (
     DEFAULT_WORDLIST_PATH_ENV or "/usr/share/seclists/Discovery/Web-Content/common.txt"
 )
-
 if not os.path.exists(DEFAULT_WORDLIST):
-    # Use a more muted warning if the default (from env or hardcoded) isn't found,
-    # as it might be overridden by a tool call later.
-    logging.warning(
+    logging.warning(  # This is fine as WARNING
         f"Default wordlist not found at '{DEFAULT_WORDLIST}'. "
         "Gobuster scans might fail or use an internal default unless "
         "a wordlist is specified per scan."
     )
-    # Don't make this a fatal error for config loading.
 
 # --- Tool Paths ---
 TOOL_PATHS = {
@@ -54,13 +48,9 @@ TOOL_PATHS = {
 def check_tool(tool_name):
     path = TOOL_PATHS.get(tool_name)
     if not path:
-        logging.warning(
+        logging.warning(  # This is fine as WARNING
             f"{tool_name.capitalize()} not found in PATH. Associated scans might fail."
         )
-        # console.print( # Avoid printing directly from here during library load
-        #     f"[bold orange_red1]Warning: Required tool '{tool_name}' not found "
-        #     f"in PATH. Associated actions will fail.[/bold orange_red1]"
-        # )
         return False
     return True
 

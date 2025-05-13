@@ -20,24 +20,53 @@ cli_console = Console()  # For messages directly from the CLI framework
 
 # Configure basic logging for the CLI module itself.
 # SessionController will have its own logger.
-logging.basicConfig(
-    level=logging.INFO,  # Or logging.DEBUG for more verbose output during dev
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Logging will be reconfigured in main_callback based on user input
 module_logger = logging.getLogger("alienrecon.cli")
 
 
 @app.callback()
-def main_callback(ctx: typer.Context):
+def main_callback(
+    ctx: typer.Context,
+    log_level: str = typer.Option(
+        "INFO",
+        "--log-level",
+        "-l",
+        help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+        case_sensitive=False,
+    ),
+):
     """
     Alien Recon AI Assistant.
     This callback can be used for context shared across all commands.
     """
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        cli_console.print(
+            f"[bold red]Invalid log level: {log_level}. Defaulting to INFO.[/bold red]"
+        )
+        numeric_level = logging.INFO
+        log_level = "INFO"  # for the logger message
+
+    # Reconfigure root logger
+    # For DEBUG, use a more detailed format
+    if numeric_level == logging.DEBUG:
+        log_format = "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
+    else:
+        log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    logging.basicConfig(
+        level=numeric_level,
+        format=log_format,
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,  # Force reconfiguration
+    )
+    # Log the effective log level being used by the application's root logger
+    logging.getLogger().info(f"Logging level set to {log_level.upper()}")
+
     # For now, SessionController is instantiated per 'recon' command.
     # If we need persistent state across 'target' and 'recon' calls
     # within one CLI invocation, we'd use ctx.obj.
-    module_logger.debug("Main CLI callback invoked.")
+    module_logger.debug("Main CLI callback invoked, logging configured.")
 
 
 @app.command()
@@ -48,15 +77,6 @@ def init():
     cli_console.print(
         "[cyan]Initialize Alien Recon workspace... (Not yet fully implemented)[/cyan]"
     )
-    # Future: Create .alienrecon directory, default config, check tool paths etc.
-    # Could also call a method on SessionController if init needs session state.
-    # For example:
-    # try:
-    #     sc = SessionController() # A temporary one just for init tasks
-    #     sc.perform_initialization_checks()
-    # except RuntimeError as e:
-    #     cli_console.print(f"[bold red]Initialization failed: {e}[/bold red]")
-    #     raise typer.Exit(code=1)
     module_logger.info("`init` command executed (stub).")
 
 
@@ -72,8 +92,6 @@ def target(
     (This command is a placeholder until session state persistence is added.
     For now, use `recon --target <addr>` for each recon run.)
     """
-    # This command currently doesn't instantiate SessionController as it doesn't
-    # persist state. It's a note for the user.
     cli_console.print(
         f"[green]Target noted:[/green] {target_address}. "
         "Use `recon --target ...` to start a session with this target."
@@ -105,6 +123,7 @@ def recon(
     ),
 ):
     """Start reconnaissance on the specified target."""
+    # Logging for this command will use the level set in main_callback
     module_logger.info(
         f"Recon command initiated with target: {target_address}, "
         f"auto: {auto}, novice_mode: {novice_mode}"
@@ -153,6 +172,4 @@ def recon(
 
 
 if __name__ == "__main__":
-    # This allows running `python src/alienrecon/cli.py` directly for simple testing
-    # The `poetry run alienrecon` command uses the entry point defined in pyproject.toml
     app()

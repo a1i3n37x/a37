@@ -1,16 +1,12 @@
-# alienrecon/tools/base.py
+# src/alienrecon/tools/base.py
 import logging
-import os  # Added os import for basename
+import os
 import subprocess
 from abc import ABC, abstractmethod
 from typing import Any
 
-# Import console from config for run_command error printing
-# Use relative import '.' because base.py is inside the 'tools' sub-package
-from ..core.config import (
-    TOOL_PATHS,
-    console,
-)  # Removed check_tool import as it's not used here
+# Correct import from core.config
+from ..core.config import TOOL_PATHS, console
 
 
 # --- Helper Function (Moved from main.py) ---
@@ -35,7 +31,8 @@ def run_command(
         return None, "Empty command list provided."
 
     executable_name = os.path.basename(command_list[0])  # Get tool name for logging
-    logging.info(f"Executing command: {' '.join(command_list)}")
+    # Use DEBUG level for command execution details
+    logging.debug(f"Executing command: {' '.join(command_list)}")
     try:
         result = subprocess.run(
             command_list,
@@ -167,7 +164,7 @@ class CommandTool(ABC):
             return {
                 "scan_summary": f"{self.name.capitalize()} execution failed.",
                 "error": err_msg,
-                "findings": [],
+                "findings": [],  # Ensure findings list/dict exists
             }
 
         try:
@@ -201,6 +198,13 @@ class CommandTool(ABC):
         # Parse the output using subclass logic, passing original kwargs for context
         try:
             parsed_results = self.parse_output(stdout, stderr, **kwargs)
+            # Ensure standard fields are present for robustness
+            if "scan_summary" not in parsed_results:
+                parsed_results["scan_summary"] = parsed_results.get(
+                    "error", f"{self.name.capitalize()} scan completed."
+                )
+            if "findings" not in parsed_results:
+                parsed_results["findings"] = []  # Default to empty list if missing
             return parsed_results
         except Exception as e:
             err_msg = f"Error parsing output for {self.name}: {e}"
