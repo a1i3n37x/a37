@@ -12,7 +12,7 @@ from ..core.config import TOOL_PATHS, console
 # --- Helper Function (Moved from main.py) ---
 # This function is generic for running any command-line tool.
 def run_command(
-    command_list: list[str], timeout: int = 600
+    command_list: list[str], timeout: int = 3600
 ) -> tuple[str | None, str | None]:
     """
     Executes an external command and captures its stdout and stderr.
