@@ -191,6 +191,9 @@ class CommandTool(ABC):
             }
 
         # Run the command using the helper function
+        stdout, stderr = run_command(command)
+
+        # Run the command using the helper function
         stdout, stderr = run_command(
             command
         )  # stderr contains error details if run failed

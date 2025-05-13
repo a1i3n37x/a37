@@ -27,7 +27,8 @@ if not API_KEY:
 # --- Default Wordlist Configuration ---
 DEFAULT_WORDLIST_PATH_ENV = os.getenv("ALIENRECON_WORDLIST")
 DEFAULT_WORDLIST = (
-    DEFAULT_WORDLIST_PATH_ENV or "/usr/share/seclists/Discovery/Web-Content/common.txt"
+    DEFAULT_WORDLIST_PATH_ENV
+    or "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt"
 )
 if not os.path.exists(DEFAULT_WORDLIST):
     logging.warning(  # This is fine as WARNING
