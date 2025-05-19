@@ -1,3 +1,4 @@
+# src/alienrecon/core/session.py
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from rich.spinner import Spinner
 
 # Tool imports
 from ..tools.gobuster import GobusterTool
+from ..tools.http_fetcher import HttpPageFetcherTool  # ADDED
 from ..tools.hydra import HydraTool
 from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
@@ -27,7 +29,6 @@ from .config import (
     DEFAULT_PASSWORD_LIST,
     DEFAULT_WORDLIST,
     initialize_openai_client,
-    # TOOL_PATHS is used by CommandTool base class, not directly here usually
 )
 
 logger = logging.getLogger(__name__)
@@ -56,51 +57,58 @@ class SessionController:
         self.nikto_tool: Optional[NiktoTool] = None
         self.smb_tool: Optional[SmbTool] = None
         self.hydra_tool: Optional[HydraTool] = None
+        self.http_fetcher_tool: Optional[HttpPageFetcherTool] = None  # ADDED
         self._initialize_tools()
 
         logger.info("SessionController initialized successfully.")
 
     def _initialize_tools(self):
         logger.debug("Initializing reconnaissance tools...")
-        tool_classes = {
+        # For tools that are classes derived from CommandTool
+        command_tool_classes = {
             "nmap_tool": NmapTool,
             "gobuster_tool": GobusterTool,
             "nikto_tool": NiktoTool,
             "smb_tool": SmbTool,
             "hydra_tool": HydraTool,
         }
-        for attr_name, tool_class in tool_classes.items():
+        for attr_name, tool_class in command_tool_classes.items():
             try:
                 tool_exe_name = getattr(
                     tool_class, "executable_name", "UnknownExecutable"
-                )  # Get from class
-                logger.debug(
-                    f"Attempting to initialize {tool_class.__name__} (for executable '{tool_exe_name}')."
                 )
-
-                instance = tool_class()  # Instantiation uses improved CommandTool.__init__ for path resolution
-
-                if (
-                    not instance.executable_path
-                ):  # If CommandTool.__init__ failed to set a valid path
+                logger.debug(
+                    f"Attempting to initialize CommandTool: {tool_class.__name__} (for '{tool_exe_name}')."
+                )
+                instance = tool_class()
+                if not instance.executable_path:
                     logger.warning(
-                        f"{tool_class.__name__} (for '{tool_exe_name}') initialized, but its executable_path is NOT set after internal checks. "
-                        f"Tool will be unavailable."
+                        f"{tool_class.__name__} (for '{tool_exe_name}') initialized, but its executable_path is NOT set. Tool unavailable."
                     )
-                    setattr(
-                        self, attr_name, None
-                    )  # Mark tool instance as None if no valid path
+                    setattr(self, attr_name, None)
                 else:
                     setattr(self, attr_name, instance)
                     logger.debug(
-                        f"{tool_class.__name__} initialized. Executable path set to: {instance.executable_path}"
+                        f"{tool_class.__name__} initialized. Executable path: {instance.executable_path}"
                     )
             except Exception as e:
                 logger.error(
-                    f"Critical error during instantiation of {tool_class.__name__}: {e}",
+                    f"Error initializing CommandTool {tool_class.__name__}: {e}",
                     exc_info=True,
                 )
-                setattr(self, attr_name, None)  # Set to None on any instantiation error
+                setattr(self, attr_name, None)
+
+        # For internal tools like HttpPageFetcherTool (not a CommandTool)
+        try:
+            logger.debug(f"Attempting to initialize {HttpPageFetcherTool.__name__}.")
+            self.http_fetcher_tool = HttpPageFetcherTool()
+            logger.debug(f"{HttpPageFetcherTool.__name__} initialized.")
+        except Exception as e:
+            logger.error(
+                f"Error initializing {HttpPageFetcherTool.__name__}: {e}", exc_info=True
+            )
+            self.http_fetcher_tool = None
+
         logger.debug("Tools initialization attempt finished.")
 
     def display_session_status(self):
@@ -119,7 +127,7 @@ class SessionController:
             self.console.print(
                 f"  🔑 Default Hydra Password List: {os.path.basename(DEFAULT_PASSWORD_LIST)}"
             )
-        else:  # If no default password list was resolved
+        else:
             self.console.print(
                 "  🔑 Default Hydra Password List: [Not Set/Found - User/AI must specify]"
             )
@@ -189,9 +197,11 @@ class SessionController:
         logger.info(f"Starting interactive reconnaissance for {self.current_target}")
 
         if not self.chat_history:
+            # Construct initial message that includes target information for the AI's first turn.
+            # The AGENT_SYSTEM_PROMPT guides it to check for HTTP first.
             initial_user_msg = (
-                f"Initiate reconnaissance for target: {self.current_target}. "
-                "I am a beginner. Please explain your steps and propose the first logical scan."
+                f"Initiate reconnaissance for primary target coordinates: {self.current_target}. "
+                "I am a beginner Earthling specimen. Please analyze any initial web presence and then propose broader scans like Nmap if needed."
             )
             self.chat_history.append({"role": "user", "content": initial_user_msg})
             ai_response = self._get_llm_response_from_agent()
@@ -254,7 +264,7 @@ class SessionController:
                         "content": "What are my options now? Or what should I investigate based on your last statement?",
                     }
                 )
-            else:  # Should not happen if history is managed well.
+            else:
                 logger.warning(
                     "Attempted to get LLM response in an unexpected state. Please provide input."
                 )
@@ -348,6 +358,7 @@ class SessionController:
             "propose_nikto_scan": "Nikto Scan",
             "propose_smb_enum": "SMB Enum",
             "propose_hydra_bruteforce": "Hydra Brute-force",
+            "propose_fetch_web_content": "Fetch Web Content",  # ADDED
         }
         display_name = tool_display_map.get(
             tool_name_llm,
@@ -357,55 +368,66 @@ class SessionController:
         self.console.rule(
             f"[bold yellow]Decision Point: {display_name} Proposal[/bold yellow]"
         )
-        display_target = tool_args.get("target", self.current_target)
-        self.console.print(f"  [dim]Target:[/dim] [cyan]{display_target}[/cyan]")
 
-        if tool_name_llm == "propose_nmap_scan":
+        # Display arguments based on tool type
+        if tool_name_llm == "propose_fetch_web_content":
             self.console.print(
-                f"  [dim]Nmap Args:[/dim] {tool_args.get('arguments', 'N/A')}"
+                f"  [dim]URL to Fetch:[/dim] [cyan]{tool_args.get('url_to_fetch', 'N/A')}[/cyan]"
             )
-        elif tool_name_llm == "propose_gobuster_scan":
-            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-            wl = tool_args.get("wordlist") or DEFAULT_WORDLIST
-            self.console.print(
-                f"  [dim]Wordlist:[/dim] {os.path.basename(wl) if wl else 'Default/Not Set'}"
-            )
-            sc = tool_args.get("status_codes")
-            if sc:
-                self.console.print(f"  [dim]Status Codes:[/dim] {sc}")
-        elif tool_name_llm == "propose_nikto_scan":
-            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-            na = tool_args.get("nikto_arguments")
-            if na:
-                self.console.print(f"  [dim]Nikto Args:[/dim] {na}")
-        elif tool_name_llm == "propose_smb_enum":
-            ea = tool_args.get("enum_arguments")
-            if ea:
-                self.console.print(f"  [dim]Enum4Linux Args:[/dim] {ea}")
-        elif tool_name_llm == "propose_hydra_bruteforce":
-            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-            self.console.print(
-                f"  [dim]Service:[/dim] {tool_args.get('service_protocol', 'N/A')}"
-            )
-            self.console.print(
-                f"  [dim]Username:[/dim] {tool_args.get('username', 'N/A')}"
-            )
-            pwl = tool_args.get("password_list") or DEFAULT_PASSWORD_LIST
-            self.console.print(
-                f"  [dim]Password List:[/dim] {os.path.basename(pwl) if pwl else 'Default/Not Set'}"
-            )
-            if tool_args.get("path"):
-                self.console.print(f"  [dim]Path:[/dim] {tool_args.get('path')}")
-            if tool_args.get("threads"):
-                self.console.print(f"  [dim]Threads:[/dim] {tool_args.get('threads')}")
-            if tool_args.get("hydra_options"):
+        else:  # For other tools that typically have a 'target'
+            display_target = tool_args.get("target", self.current_target)
+            self.console.print(f"  [dim]Target:[/dim] [cyan]{display_target}[/cyan]")
+
+            if tool_name_llm == "propose_nmap_scan":
                 self.console.print(
-                    f"  [dim]Other Hydra Opts:[/dim] {tool_args.get('hydra_options')}"
+                    f"  [dim]Nmap Args:[/dim] {tool_args.get('arguments', 'N/A')}"
                 )
+            elif tool_name_llm == "propose_gobuster_scan":
+                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
+                wl = tool_args.get("wordlist") or DEFAULT_WORDLIST
+                self.console.print(
+                    f"  [dim]Wordlist:[/dim] {os.path.basename(wl) if wl else 'Default/Not Set'}"
+                )
+                sc = tool_args.get("status_codes")
+                if sc:
+                    self.console.print(f"  [dim]Status Codes:[/dim] {sc}")
+            elif tool_name_llm == "propose_nikto_scan":
+                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
+                na = tool_args.get("nikto_arguments")
+                if na:
+                    self.console.print(f"  [dim]Nikto Args:[/dim] {na}")
+            elif tool_name_llm == "propose_smb_enum":
+                ea = tool_args.get("enum_arguments")
+                if ea:
+                    self.console.print(f"  [dim]Enum4Linux Args:[/dim] {ea}")
+            elif tool_name_llm == "propose_hydra_bruteforce":
+                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
+                self.console.print(
+                    f"  [dim]Service:[/dim] {tool_args.get('service_protocol', 'N/A')}"
+                )
+                self.console.print(
+                    f"  [dim]Username:[/dim] {tool_args.get('username', 'N/A')}"
+                )
+                pwl = tool_args.get("password_list") or DEFAULT_PASSWORD_LIST
+                self.console.print(
+                    f"  [dim]Password List:[/dim] {os.path.basename(pwl) if pwl else 'Default/Not Set'}"
+                )
+                if tool_args.get("path"):
+                    self.console.print(f"  [dim]Path:[/dim] {tool_args.get('path')}")
+                if tool_args.get("threads"):
+                    self.console.print(
+                        f"  [dim]Threads:[/dim] {tool_args.get('threads')}"
+                    )
+                if tool_args.get("hydra_options"):
+                    self.console.print(
+                        f"  [dim]Other Hydra Opts:[/dim] {tool_args.get('hydra_options')}"
+                    )
 
         self.console.rule()
 
         if self.is_novice_mode:
+            # For fetching web content, if it's just for AI context, maybe auto-confirm or make it less prominent?
+            # For now, keep confirmation for all tools in novice mode.
             confirmation = (
                 self.console.input("  Proceed with this action? (yes/no): ")
                 .lower()
@@ -413,9 +435,7 @@ class SessionController:
             )
             confirmed = confirmation in ["yes", "y"]
             if not confirmed:
-                logger.info(
-                    f"User declined tool: {display_name} for target {display_target}"
-                )
+                logger.info(f"User declined tool: {display_name} (Args: {tool_args})")
             return confirmed
         else:
             self.console.print(
@@ -432,7 +452,7 @@ class SessionController:
         cancellation_content = json.dumps(
             {
                 "status": "Cancelled by user",
-                "message": "The Earthling specimen has declined the proposed scan. Please suggest an alternative or ask for clarification based on previous findings.",
+                "message": "The Earthling specimen has declined the proposed action. Please suggest an alternative or ask for clarification based on previous findings.",
             }
         )
         tool_response_msg = {
@@ -504,61 +524,116 @@ class SessionController:
             self._process_llm_message(ai_follow_up_response)
             return
 
-        target_for_tool = tool_args_from_llm.get("target", self.current_target)
-        if not target_for_tool:
+        # For CommandTools, 'target' is primary. For HttpPageFetcher, 'url_to_fetch' is primary.
+        # This logic handles the primary identifier for the operation.
+        primary_identifier_for_log = ""
+        if tool_name_llm == "propose_fetch_web_content":
+            primary_identifier_for_log = tool_args_from_llm.get(
+                "url_to_fetch", "N/A URL"
+            )
+        else:
+            primary_identifier_for_log = tool_args_from_llm.get(
+                "target", self.current_target or "N/A Target"
+            )
+
+        tool_display_name = (
+            tool_name_llm.replace("propose_", "").replace("_", " ").title()
+        )
+
+        # Specific argument validation for HttpPageFetcherTool
+        if tool_name_llm == "propose_fetch_web_content":
+            url_to_fetch = tool_args_from_llm.get("url_to_fetch")
+            if not url_to_fetch or not (
+                url_to_fetch.startswith("http://")
+                or url_to_fetch.startswith("https://")
+            ):
+                err_msg = f"Invalid or missing 'url_to_fetch' for {tool_name_llm}. Must be a full URL. Received: '{url_to_fetch}'"
+                logger.error(err_msg)
+                tool_result_content_dict = {
+                    "error": err_msg,
+                    "scan_summary": "HTTP Fetcher argument error.",
+                }
+                # Send error to LLM and get next response
+                self._send_tool_error_to_llm(tool_id, tool_name_llm, err_msg)
+                ai_follow_up_response = self._get_llm_response_from_agent()
+                self._process_llm_message(ai_follow_up_response)
+                return
+        # General target validation for other tools
+        elif (
+            not tool_args_from_llm.get("target") and not self.current_target
+        ):  # For CommandTools
             err_msg = f"No target available (from LLM args or session) for tool {tool_name_llm}."
             logger.error(err_msg)
             tool_result_content_dict = {
                 "error": err_msg,
                 "scan_summary": "Target missing for tool execution.",
             }
-        else:
-            final_tool_args_for_execution = tool_args_from_llm.copy()
-            final_tool_args_for_execution["target"] = (
-                target_for_tool  # Ensure 'target' is the resolved one
+            self._send_tool_error_to_llm(tool_id, tool_name_llm, err_msg)
+            ai_follow_up_response = self._get_llm_response_from_agent()
+            self._process_llm_message(ai_follow_up_response)
+            return
+
+        # Prepare arguments for actual tool execution
+        final_tool_args_for_execution = tool_args_from_llm.copy()
+        if tool_name_llm != "propose_fetch_web_content":  # CommandTools expect 'target'
+            # Ensure 'target' is the resolved one for CommandTools
+            final_tool_args_for_execution["target"] = tool_args_from_llm.get(
+                "target", self.current_target
             )
 
-            tool_instance = None
-            if tool_name_llm == "propose_nmap_scan":
-                tool_instance = self.nmap_tool
-            elif tool_name_llm == "propose_gobuster_scan":
-                tool_instance = self.gobuster_tool
-                # GobusterTool expects 'target_ip', map it
-                final_tool_args_for_execution["target_ip"] = (
-                    final_tool_args_for_execution.pop("target", target_for_tool)
-                )
-            elif tool_name_llm == "propose_nikto_scan":
-                tool_instance = self.nikto_tool
-            elif tool_name_llm == "propose_smb_enum":
-                tool_instance = self.smb_tool
-            elif tool_name_llm == "propose_hydra_bruteforce":
-                tool_instance = self.hydra_tool
-
-            tool_display_name = (
-                tool_name_llm.replace("propose_", "").replace("_", " ").title()
-            )
-
+        tool_instance: Any = None  # Using Any for type hint flexibility here
+        if tool_name_llm == "propose_nmap_scan":
+            tool_instance = self.nmap_tool
+        elif tool_name_llm == "propose_gobuster_scan":
+            tool_instance = self.gobuster_tool
             if (
-                tool_instance and tool_instance.executable_path
-            ):  # Check if tool is available and path resolved
-                self.console.print(
-                    f"[green]Engaging tool [bold]{tool_display_name}[/bold] on target [cyan]{target_for_tool}[/cyan]...[/green]"
+                "target" in final_tool_args_for_execution
+            ):  # GobusterTool expects 'target_ip'
+                final_tool_args_for_execution["target_ip"] = (
+                    final_tool_args_for_execution.pop("target")
                 )
-                spinner = Spinner("dots", text=f" Executing {tool_display_name}...")
-                with self.console.status(spinner):
+        elif tool_name_llm == "propose_nikto_scan":
+            tool_instance = self.nikto_tool
+        elif tool_name_llm == "propose_smb_enum":
+            tool_instance = self.smb_tool
+        elif tool_name_llm == "propose_hydra_bruteforce":
+            tool_instance = self.hydra_tool
+        elif tool_name_llm == "propose_fetch_web_content":
+            tool_instance = self.http_fetcher_tool
+
+        self.console.print(
+            f"[green]Engaging tool [bold]{tool_display_name}[/bold] on [cyan]{primary_identifier_for_log}[/cyan]...[/green]"
+        )
+        spinner = Spinner("dots", text=f" Executing {tool_display_name}...")
+        with self.console.status(spinner):
+            if tool_instance:
+                # For CommandTool instances, check executable_path
+                if (
+                    hasattr(tool_instance, "executable_path")
+                    and not tool_instance.executable_path
+                ):
+                    msg = (
+                        f"Tool '{tool_name_llm}' cannot be executed because its executable path is not set. "
+                        f"Ensure '{getattr(tool_instance, 'executable_name', 'tool')}' is installed and configured."
+                    )
+                    logger.error(msg)
+                    tool_result_content_dict = {
+                        "error": msg,
+                        "scan_summary": "Tool misconfigured (no executable path).",
+                    }
+                else:  # Either a CommandTool with path, or a non-CommandTool like HttpPageFetcher
                     tool_result_content_dict = tool_instance.execute(
                         **final_tool_args_for_execution
                     )
-            else:
+            else:  # Tool instance itself is None (failed initialization)
                 msg = (
-                    f"Tool '{tool_name_llm}' cannot be executed because its instance or "
-                    f"executable path is not available (it may have failed to initialize "
-                    f"or '{getattr(tool_instance, 'executable_name', tool_name_llm)}' not found)."
+                    f"Tool '{tool_name_llm}' cannot be executed because its instance is not available "
+                    f"(it may have failed to initialize)."
                 )
                 logger.warning(msg)
                 tool_result_content_dict = {
                     "error": msg,
-                    "scan_summary": "Tool unavailable or misconfigured.",
+                    "scan_summary": "Tool unavailable (initialization failed).",
                 }
 
         if "scan_summary" not in tool_result_content_dict:
