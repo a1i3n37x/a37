@@ -1,4 +1,3 @@
-# src/alienrecon/core/session.py
 import json
 import logging
 import os
@@ -13,23 +12,22 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.spinner import Spinner
 
-from ..tools.gobuster import GobusterTool
-from ..tools.nikto import NiktoTool
-
 # Tool imports
+from ..tools.gobuster import GobusterTool
+from ..tools.hydra import HydraTool
+from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
 from ..tools.smb import SmbTool
 from .agent import (
     AGENT_SYSTEM_PROMPT,
     AGENT_WELCOME_MESSAGE,
     get_llm_response,
-    # tools as llm_tools_defined_in_agent # Not strictly needed by SessionController
 )
-
-# Config and Agent imports
 from .config import (
+    DEFAULT_PASSWORD_LIST,
     DEFAULT_WORDLIST,
     initialize_openai_client,
+    # TOOL_PATHS is used by CommandTool base class, not directly here usually
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +36,7 @@ logger = logging.getLogger(__name__)
 class SessionController:
     def __init__(self):
         self.console = Console()
-        logger.debug("Initializing SessionController...")  # Changed from INFO to DEBUG
+        logger.debug("Initializing SessionController...")
         try:
             self.openai_client = initialize_openai_client()
         except Exception as e:
@@ -57,11 +55,10 @@ class SessionController:
         self.gobuster_tool: Optional[GobusterTool] = None
         self.nikto_tool: Optional[NiktoTool] = None
         self.smb_tool: Optional[SmbTool] = None
+        self.hydra_tool: Optional[HydraTool] = None
         self._initialize_tools()
 
-        logger.info(
-            "SessionController initialized successfully."
-        )  # Kept as INFO: key component ready
+        logger.info("SessionController initialized successfully.")
 
     def _initialize_tools(self):
         logger.debug("Initializing reconnaissance tools...")
@@ -70,23 +67,40 @@ class SessionController:
             "gobuster_tool": GobusterTool,
             "nikto_tool": NiktoTool,
             "smb_tool": SmbTool,
+            "hydra_tool": HydraTool,
         }
         for attr_name, tool_class in tool_classes.items():
             try:
-                instance = tool_class()
-                if not instance.executable_path:
+                tool_exe_name = getattr(
+                    tool_class, "executable_name", "UnknownExecutable"
+                )  # Get from class
+                logger.debug(
+                    f"Attempting to initialize {tool_class.__name__} (for executable '{tool_exe_name}')."
+                )
+
+                instance = tool_class()  # Instantiation uses improved CommandTool.__init__ for path resolution
+
+                if (
+                    not instance.executable_path
+                ):  # If CommandTool.__init__ failed to set a valid path
                     logger.warning(
-                        f"{tool_class.__name__} executable not found. Tool unavailable."
+                        f"{tool_class.__name__} (for '{tool_exe_name}') initialized, but its executable_path is NOT set after internal checks. "
+                        f"Tool will be unavailable."
                     )
-                    setattr(self, attr_name, None)
+                    setattr(
+                        self, attr_name, None
+                    )  # Mark tool instance as None if no valid path
                 else:
                     setattr(self, attr_name, instance)
-                    logger.debug(f"{tool_class.__name__} initialized.")
+                    logger.debug(
+                        f"{tool_class.__name__} initialized. Executable path set to: {instance.executable_path}"
+                    )
             except Exception as e:
                 logger.error(
-                    f"Error initializing {tool_class.__name__}: {e}", exc_info=True
+                    f"Critical error during instantiation of {tool_class.__name__}: {e}",
+                    exc_info=True,
                 )
-                setattr(self, attr_name, None)
+                setattr(self, attr_name, None)  # Set to None on any instantiation error
         logger.debug("Tools initialization attempt finished.")
 
     def display_session_status(self):
@@ -101,13 +115,23 @@ class SessionController:
             self.console.print(
                 f"  📖 Default Gobuster Wordlist: {os.path.basename(DEFAULT_WORDLIST)}"
             )
+        if DEFAULT_PASSWORD_LIST:
+            self.console.print(
+                f"  🔑 Default Hydra Password List: {os.path.basename(DEFAULT_PASSWORD_LIST)}"
+            )
+        else:  # If no default password list was resolved
+            self.console.print(
+                "  🔑 Default Hydra Password List: [Not Set/Found - User/AI must specify]"
+            )
         self.console.print("-" * 50)
 
     def set_target(self, target_address: str):
         is_valid_target = False
         if target_address:
             if (
-                re.match(r"^\d{1,3}(\.\d{1,3}){3}$", target_address)
+                re.match(
+                    r"^\d{1,3}(\.\d{1,3}){3}(?:/\d{1,2})?$", target_address.strip()
+                )
                 or "." in target_address.strip()
             ):
                 is_valid_target = True
@@ -119,14 +143,10 @@ class SessionController:
                 self.console.print(
                     f"[bold blue]Session Target Locked:[/bold blue] {self.current_target}"
                 )
-                logger.info(
-                    f"Target set to: {self.current_target}"
-                )  # Kept as INFO: important event
+                logger.info(f"Target set to: {self.current_target}")
                 self.chat_history = []
                 self.pending_tool_call = None
-                logger.debug(
-                    "Chat history cleared due to new target."
-                )  # Changed from INFO to DEBUG
+                logger.debug("Chat history cleared due to new target.")
             else:
                 self.console.print(
                     f"[blue]Session Target re-confirmed:[/blue] {self.current_target}"
@@ -147,9 +167,7 @@ class SessionController:
             self.console.print(
                 f"[cyan]Guidance mode set to: [bold]{mode_text}[/bold][/cyan]"
             )
-            logger.info(
-                f"Novice mode set to: {self.is_novice_mode}"
-            )  # Kept as INFO: user-initiated change
+            logger.info(f"Novice mode set to: {self.is_novice_mode}")
         else:
             mode_text = "Novice" if novice else "Expert"
             self.console.print(
@@ -159,7 +177,7 @@ class SessionController:
     def start_interactive_recon_session(self):
         if not self.current_target:
             self.console.print(
-                "[bold red]Recon Error: No target set. Use 'target <addr>'.[/bold red]"
+                "[bold red]Recon Error: No target set. Use 'target <addr>' or `recon --target <addr>`.[/bold red]"
             )
             return
 
@@ -168,32 +186,29 @@ class SessionController:
         self.console.print("Type 'exit' or 'quit' to end recon and return to CLI.")
         self.console.print("-" * 50)
 
-        logger.info(
-            f"Starting interactive reconnaissance for {self.current_target}"
-        )  # Kept as INFO
+        logger.info(f"Starting interactive reconnaissance for {self.current_target}")
 
-        initial_user_msg = (
-            f"Initiate reconnaissance for target: {self.current_target}. "
-            "Provide analysis and propose the first logical scan."
-        )
-        self.chat_history.append({"role": "user", "content": initial_user_msg})
-        ai_response = self._get_llm_response_from_agent()
-        self._process_llm_message(ai_response)
+        if not self.chat_history:
+            initial_user_msg = (
+                f"Initiate reconnaissance for target: {self.current_target}. "
+                "I am a beginner. Please explain your steps and propose the first logical scan."
+            )
+            self.chat_history.append({"role": "user", "content": initial_user_msg})
+            ai_response = self._get_llm_response_from_agent()
+            self._process_llm_message(ai_response)
 
         while True:
             try:
                 if self.pending_tool_call:
                     if self._confirm_tool_proposal():
-                        self._execute_and_process_tool_call()  # This gets new LLM response internally
-                    else:  # User cancelled
+                        self._execute_and_process_tool_call()
+                    else:
                         self._send_tool_cancellation_to_llm(
                             self.pending_tool_call.id,
                             self.pending_tool_call.function.name,
                         )
-                        self.pending_tool_call = None  # Clear it
-                        ai_response = (
-                            self._get_llm_response_from_agent()
-                        )  # Get LLM reaction
+                        self.pending_tool_call = None
+                        ai_response = self._get_llm_response_from_agent()
                         self._process_llm_message(ai_response)
                     continue
 
@@ -223,10 +238,30 @@ class SessionController:
                     f"[bold red]Critical error: {e}. Session ending.[/bold red]"
                 )
                 break
+        logger.info(f"Interactive session ended for target {self.current_target}")
 
     def _get_llm_response_from_agent(self) -> Optional[ChatCompletionMessage]:
+        if not self.chat_history or (
+            self.chat_history[-1]["role"] not in ["user", "tool"]
+        ):
+            if not self.chat_history or self.chat_history[-1]["role"] == "assistant":
+                logger.debug(
+                    "Last message was from assistant without tool call, appending clarifying user message."
+                )
+                self.chat_history.append(
+                    {
+                        "role": "user",
+                        "content": "What are my options now? Or what should I investigate based on your last statement?",
+                    }
+                )
+            else:  # Should not happen if history is managed well.
+                logger.warning(
+                    "Attempted to get LLM response in an unexpected state. Please provide input."
+                )
+                return None
+
         logger.debug(
-            f"Sending {len(self.chat_history)} messages to LLM. Last: {self.chat_history[-1]['content'][:70] if self.chat_history else 'None'}"
+            f"Sending {len(self.chat_history)} messages to LLM. Last: '{self.chat_history[-1]['content'][:70] if self.chat_history and self.chat_history[-1].get('content') else 'Tool Call/No Content'}'"
         )
         ai_message_obj = get_llm_response(
             client=self.openai_client,
@@ -240,23 +275,30 @@ class SessionController:
             log_tools = (
                 len(ai_message_obj.tool_calls) if ai_message_obj.tool_calls else 0
             )
-            logger.debug(f"LLM response. Content: {log_content}... Tools: {log_tools}")
+            logger.debug(
+                f"LLM response. Content: '{log_content[:70]}...' Tools: {log_tools}"
+            )
         else:
-            logger.warning("get_llm_response returned None.")
+            logger.warning("get_llm_response returned None. AI did not respond.")
         return ai_message_obj
 
     def _process_llm_message(self, ai_message: Optional[ChatCompletionMessage]):
         if not ai_message:
-            self.console.print("[red](Alien Recon did not respond.)[/red]")
+            self.console.print(
+                "[red](Alien Recon encountered an issue and could not respond. Please try again or check logs.)[/red]"
+            )
             return
 
         self.pending_tool_call = None
-
-        message_for_history = {"role": "assistant", "content": ai_message.content}
+        message_for_history: dict[str, Any] = {"role": "assistant"}
+        if ai_message.content:
+            message_for_history["content"] = ai_message.content
+        else:
+            message_for_history["content"] = None
 
         if ai_message.tool_calls:
             self.pending_tool_call = ai_message.tool_calls[0]
-            logger.debug(  # Changed from INFO to DEBUG
+            logger.debug(
                 f"LLM proposed tool call ID: {self.pending_tool_call.id}, "
                 f"Func: {self.pending_tool_call.function.name}, "
                 f"Args: {self.pending_tool_call.function.arguments}"
@@ -264,17 +306,17 @@ class SessionController:
             message_for_history["tool_calls"] = [
                 tc.model_dump() for tc in ai_message.tool_calls
             ]
-            if not ai_message.content:
-                message_for_history["content"] = None
 
-        if ai_message.content or ai_message.tool_calls:
-            if ai_message.content:
-                self.console.print(Markdown(f"**Alien Recon:** {ai_message.content}"))
+        if message_for_history["content"] or message_for_history.get("tool_calls"):
+            if message_for_history["content"]:
+                self.console.print(
+                    Markdown(f"**Alien Recon:** {message_for_history['content']}")
+                )
             self.chat_history.append(message_for_history)
         else:
-            logger.warning("LLM message had no content and no tool_calls.")
+            logger.warning("LLM message had no text content and no tool_calls.")
             self.console.print(
-                "[grey50](Alien Recon offered no further guidance.)[/grey50]"
+                "[grey50](Alien Recon offered no textual guidance and proposed no actions this turn.)[/grey50]"
             )
 
     def _confirm_tool_proposal(self) -> bool:
@@ -287,49 +329,80 @@ class SessionController:
             tool_args = json.loads(self.pending_tool_call.function.arguments)
         except json.JSONDecodeError as e:
             logger.error(
-                f"JSONDecodeError for {tool_name_llm} args: {self.pending_tool_call.function.arguments}. E: {e}"
+                f"JSONDecodeError for LLM tool args: {self.pending_tool_call.function.arguments}. Tool: {tool_name_llm}. Error: {e}"
             )
             self.console.print(
-                "[bold red]Error: AI proposed action with invalid arguments. Aborting.[/bold red]"
+                f"[bold red]Error: AI proposed action '{tool_name_llm}' with invalid arguments. Aborting this action.[/bold red]"
             )
+            self._send_tool_error_to_llm(
+                self.pending_tool_call.id,
+                tool_name_llm,
+                f"Failed to parse arguments: {e}. Arguments received: {self.pending_tool_call.function.arguments}",
+            )
+            self.pending_tool_call = None
             return False
 
         tool_display_map = {
-            "propose_nmap_scan": "Nmap",
-            "propose_gobuster_scan": "Gobuster",
-            "propose_nikto_scan": "Nikto",
+            "propose_nmap_scan": "Nmap Scan",
+            "propose_gobuster_scan": "Gobuster Scan",
+            "propose_nikto_scan": "Nikto Scan",
             "propose_smb_enum": "SMB Enum",
+            "propose_hydra_bruteforce": "Hydra Brute-force",
         }
         display_name = tool_display_map.get(
-            tool_name_llm, tool_name_llm.replace("propose_", "")
+            tool_name_llm,
+            tool_name_llm.replace("propose_", "").replace("_", " ").title(),
         )
 
         self.console.rule(
-            f"[bold yellow]Decision Point: {display_name} Scan Proposal[/bold yellow]"
+            f"[bold yellow]Decision Point: {display_name} Proposal[/bold yellow]"
         )
         display_target = tool_args.get("target", self.current_target)
         self.console.print(f"  [dim]Target:[/dim] [cyan]{display_target}[/cyan]")
 
-        if "arguments" in tool_args:
-            self.console.print(f"  [dim]Nmap Args:[/dim] {tool_args['arguments']}")
-        if "port" in tool_args:
-            self.console.print(f"  [dim]Port:[/dim] {tool_args['port']}")
-        if "wordlist" in tool_args or tool_name_llm == "propose_gobuster_scan":
+        if tool_name_llm == "propose_nmap_scan":
+            self.console.print(
+                f"  [dim]Nmap Args:[/dim] {tool_args.get('arguments', 'N/A')}"
+            )
+        elif tool_name_llm == "propose_gobuster_scan":
+            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
             wl = tool_args.get("wordlist") or DEFAULT_WORDLIST
             self.console.print(
-                f"  [dim]Wordlist:[/dim] {os.path.basename(wl) if wl else 'Default'}"
+                f"  [dim]Wordlist:[/dim] {os.path.basename(wl) if wl else 'Default/Not Set'}"
             )
-        if "nikto_arguments" in tool_args:
+            sc = tool_args.get("status_codes")
+            if sc:
+                self.console.print(f"  [dim]Status Codes:[/dim] {sc}")
+        elif tool_name_llm == "propose_nikto_scan":
+            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
+            na = tool_args.get("nikto_arguments")
+            if na:
+                self.console.print(f"  [dim]Nikto Args:[/dim] {na}")
+        elif tool_name_llm == "propose_smb_enum":
+            ea = tool_args.get("enum_arguments")
+            if ea:
+                self.console.print(f"  [dim]Enum4Linux Args:[/dim] {ea}")
+        elif tool_name_llm == "propose_hydra_bruteforce":
+            self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
             self.console.print(
-                f"  [dim]Nikto Args:[/dim] {tool_args.get('nikto_arguments') or 'Default'}"
-            )
-        if "enum_arguments" in tool_args and self.smb_tool:
-            default_smb_args = (
-                self.smb_tool.DEFAULT_ARGS if self.smb_tool else "-A (default)"
+                f"  [dim]Service:[/dim] {tool_args.get('service_protocol', 'N/A')}"
             )
             self.console.print(
-                f"  [dim]SMB Enum Args:[/dim] {tool_args.get('enum_arguments') or default_smb_args}"
+                f"  [dim]Username:[/dim] {tool_args.get('username', 'N/A')}"
             )
+            pwl = tool_args.get("password_list") or DEFAULT_PASSWORD_LIST
+            self.console.print(
+                f"  [dim]Password List:[/dim] {os.path.basename(pwl) if pwl else 'Default/Not Set'}"
+            )
+            if tool_args.get("path"):
+                self.console.print(f"  [dim]Path:[/dim] {tool_args.get('path')}")
+            if tool_args.get("threads"):
+                self.console.print(f"  [dim]Threads:[/dim] {tool_args.get('threads')}")
+            if tool_args.get("hydra_options"):
+                self.console.print(
+                    f"  [dim]Other Hydra Opts:[/dim] {tool_args.get('hydra_options')}"
+                )
+
         self.console.rule()
 
         if self.is_novice_mode:
@@ -340,7 +413,7 @@ class SessionController:
             )
             confirmed = confirmation in ["yes", "y"]
             if not confirmed:
-                logger.info(  # Kept as INFO: User explicitly declined a proposal
+                logger.info(
                     f"User declined tool: {display_name} for target {display_target}"
                 )
             return confirmed
@@ -356,11 +429,10 @@ class SessionController:
                 f"Cannot send tool cancellation: Missing tool_call_id ({tool_call_id}) or function_name ({function_name})."
             )
             return
-
         cancellation_content = json.dumps(
             {
                 "status": "Cancelled by user",
-                "message": "The Earthling specimen has declined the proposed scan. Please suggest an alternative or ask for clarification.",
+                "message": "The Earthling specimen has declined the proposed scan. Please suggest an alternative or ask for clarification based on previous findings.",
             }
         )
         tool_response_msg = {
@@ -370,8 +442,34 @@ class SessionController:
             "content": cancellation_content,
         }
         self.chat_history.append(tool_response_msg)
-        logger.debug(  # Changed from INFO to DEBUG
+        logger.debug(
             f"Appended user cancellation for {function_name} (ID: {tool_call_id}) to history."
+        )
+
+    def _send_tool_error_to_llm(
+        self, tool_call_id: str, function_name: str, error_message: str
+    ):
+        if not tool_call_id or not function_name:
+            logger.error(
+                "Cannot send tool error: Missing tool_call_id or function_name."
+            )
+            return
+        error_content = json.dumps(
+            {
+                "status": "Error before execution",
+                "error": error_message,
+                "message": "There was an error processing the arguments for this tool or preparing it for execution. Please review the error and propose a corrected tool call or an alternative action.",
+            }
+        )
+        tool_response_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": function_name,
+            "content": error_content,
+        }
+        self.chat_history.append(tool_response_msg)
+        logger.debug(
+            f"Appended client-side tool error for {function_name} (ID: {tool_call_id}) to history: {error_message}"
         )
 
     def _execute_and_process_tool_call(self):
@@ -385,72 +483,87 @@ class SessionController:
         tool_name_llm = tool_to_execute.function.name
         tool_id = tool_to_execute.id
         tool_args_str = tool_to_execute.function.arguments
-        tool_result_content_dict = {"findings": {}}
+        tool_result_content_dict: dict[str, Any] = {"findings": {}}
 
         try:
             tool_args_from_llm = json.loads(tool_args_str)
         except json.JSONDecodeError as e:
             logger.error(
-                f"JSONDecodeError for {tool_name_llm} args: {tool_args_str}. E: {e}"
+                f"JSONDecodeError during execute for {tool_name_llm} args: {tool_args_str}. Error: {e}"
             )
-            tool_result_content_dict["error"] = f"Invalid arguments from LLM: {e}"
-            tool_result_content_dict["scan_summary"] = "Tool argument processing error."
-        else:
-            target_for_tool = tool_args_from_llm.get("target", self.current_target)
-            if not target_for_tool:
-                err_msg = f"No target available (from LLM args or session) for tool {tool_name_llm}."
-                logger.error(err_msg)
-                tool_result_content_dict["error"] = err_msg
-                tool_result_content_dict["scan_summary"] = (
-                    "Target missing for tool execution."
-                )
-            else:
-                final_tool_args = tool_args_from_llm.copy()
-                final_tool_args["target"] = target_for_tool
+            tool_result_content_dict["error"] = (
+                f"Internal Error: Invalid arguments from LLM: {e}"
+            )
+            tool_result_content_dict["scan_summary"] = (
+                "Tool argument processing error before execution."
+            )
+            self._send_tool_error_to_llm(
+                tool_id, tool_name_llm, str(tool_result_content_dict["error"])
+            )
+            ai_follow_up_response = self._get_llm_response_from_agent()
+            self._process_llm_message(ai_follow_up_response)
+            return
 
-                tool_display_name = tool_name_llm.replace("propose_", "")
+        target_for_tool = tool_args_from_llm.get("target", self.current_target)
+        if not target_for_tool:
+            err_msg = f"No target available (from LLM args or session) for tool {tool_name_llm}."
+            logger.error(err_msg)
+            tool_result_content_dict = {
+                "error": err_msg,
+                "scan_summary": "Target missing for tool execution.",
+            }
+        else:
+            final_tool_args_for_execution = tool_args_from_llm.copy()
+            final_tool_args_for_execution["target"] = (
+                target_for_tool  # Ensure 'target' is the resolved one
+            )
+
+            tool_instance = None
+            if tool_name_llm == "propose_nmap_scan":
+                tool_instance = self.nmap_tool
+            elif tool_name_llm == "propose_gobuster_scan":
+                tool_instance = self.gobuster_tool
+                # GobusterTool expects 'target_ip', map it
+                final_tool_args_for_execution["target_ip"] = (
+                    final_tool_args_for_execution.pop("target", target_for_tool)
+                )
+            elif tool_name_llm == "propose_nikto_scan":
+                tool_instance = self.nikto_tool
+            elif tool_name_llm == "propose_smb_enum":
+                tool_instance = self.smb_tool
+            elif tool_name_llm == "propose_hydra_bruteforce":
+                tool_instance = self.hydra_tool
+
+            tool_display_name = (
+                tool_name_llm.replace("propose_", "").replace("_", " ").title()
+            )
+
+            if (
+                tool_instance and tool_instance.executable_path
+            ):  # Check if tool is available and path resolved
                 self.console.print(
                     f"[green]Engaging tool [bold]{tool_display_name}[/bold] on target [cyan]{target_for_tool}[/cyan]...[/green]"
                 )
                 spinner = Spinner("dots", text=f" Executing {tool_display_name}...")
                 with self.console.status(spinner):
-                    if tool_name_llm == "propose_nmap_scan" and self.nmap_tool:
-                        tool_result_content_dict = self.nmap_tool.execute(
-                            **final_tool_args
-                        )
-                    elif (
-                        tool_name_llm == "propose_gobuster_scan" and self.gobuster_tool
-                    ):
-                        gb_exec_args = {
-                            "target_ip": final_tool_args.get("target"),
-                            "port": final_tool_args.get("port"),
-                            "wordlist": final_tool_args.get("wordlist"),
-                        }
-                        gb_exec_args_clean = {
-                            k: v for k, v in gb_exec_args.items() if v is not None
-                        }
-                        tool_result_content_dict = self.gobuster_tool.execute(
-                            **gb_exec_args_clean
-                        )
-                    elif tool_name_llm == "propose_nikto_scan" and self.nikto_tool:
-                        tool_result_content_dict = self.nikto_tool.execute(
-                            **final_tool_args
-                        )
-                    elif tool_name_llm == "propose_smb_enum" and self.smb_tool:
-                        tool_result_content_dict = self.smb_tool.execute(
-                            **final_tool_args
-                        )
-                    else:
-                        msg = f"Tool '{tool_name_llm}' is not available/recognized or failed to init."
-                        logger.warning(msg)
-                        tool_result_content_dict = {
-                            "error": msg,
-                            "scan_summary": "Tool unavailable.",
-                        }
+                    tool_result_content_dict = tool_instance.execute(
+                        **final_tool_args_for_execution
+                    )
+            else:
+                msg = (
+                    f"Tool '{tool_name_llm}' cannot be executed because its instance or "
+                    f"executable path is not available (it may have failed to initialize "
+                    f"or '{getattr(tool_instance, 'executable_name', tool_name_llm)}' not found)."
+                )
+                logger.warning(msg)
+                tool_result_content_dict = {
+                    "error": msg,
+                    "scan_summary": "Tool unavailable or misconfigured.",
+                }
 
         if "scan_summary" not in tool_result_content_dict:
             tool_result_content_dict["scan_summary"] = tool_result_content_dict.get(
-                "error", "Scan completed."
+                "error", "Scan completed with undefined summary."
             )
         if "findings" not in tool_result_content_dict:
             tool_result_content_dict["findings"] = {}
@@ -468,8 +581,8 @@ class SessionController:
             "content": tool_result_for_llm_str,
         }
         self.chat_history.append(tool_response_message)
-        logger.debug(  # Changed from INFO to DEBUG
-            f"Appended execution result for {tool_name_llm} (ID: {tool_id}) to history."
+        logger.debug(
+            f"Appended execution result for {tool_name_llm} (ID: {tool_id}) to history. Summary: {tool_result_content_dict['scan_summary']}"
         )
 
         ai_follow_up_response = self._get_llm_response_from_agent()
@@ -486,5 +599,6 @@ class SessionController:
             f"{self.current_target}[/italic blue]"
         )
         self.console.print(
-            "[grey50]Auto-recon (Phase 3 - TODO: Implement TaskQueue logic)...[/grey50]"
+            "[grey50](Auto-recon is a planned feature and not yet implemented.)[/grey50]"
         )
+        logger.info(f"Auto-recon attempt for {self.current_target} (not implemented).")

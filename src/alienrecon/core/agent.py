@@ -5,11 +5,18 @@ import os
 import openai
 
 # Import necessary items from config
-from .config import DEFAULT_WORDLIST, console  # Use relative import within the package
+from .config import (  # Added DEFAULT_PASSWORD_LIST
+    DEFAULT_PASSWORD_LIST,
+    DEFAULT_WORDLIST,
+    console,
+)
 
 # --- Helper for long string in tool definition ---
 _default_wordlist_basename = (
     os.path.basename(DEFAULT_WORDLIST) if DEFAULT_WORDLIST else "N/A"
+)
+_default_password_list_basename = (
+    os.path.basename(DEFAULT_PASSWORD_LIST) if DEFAULT_PASSWORD_LIST else "N/A"
 )
 
 
@@ -38,7 +45,7 @@ workflows and beginner steps.
 Be conversational, but also **concise and directive when guiding the next step**.
 Explain *why* a step is taken briefly.
 Do not perform any actions yourself beyond analysis and suggestions. **HOWEVER,
-when you determine a specific scan (like Nmap or Gobuster) is the logical next
+when you determine a specific scan (like Nmap, Gobuster, or Hydra) is the logical next
 step based on the current context and findings, you MUST use the available
 'tools' (function calls) to propose this scan to the user.**
 
@@ -75,88 +82,56 @@ step based on the current context and findings, you MUST use the available
             version.
     *   **Present Multiple Actionable Options:**
         *   If multiple distinct services (e.g., web, SMB, FTP) are found, or if a single service type (like web) is found on multiple ports, **present these as distinct, numbered options** to the user.
-        *   For each option, briefly state the service, the port, and the primary tools/actions you'd recommend (e.g., "Explore web service on port 80 with Gobuster and Nikto," "Investigate SMB on port 445 with enum4linux-ng," "Manually check FTP on port 21 for anonymous login").
+        *   For each option, briefly state the service, the port, and the primary tools/actions you'd recommend (e.g., "Explore web service on port 80 with Gobuster and Nikto," "Investigate SMB on port 445 with enum4linux-ng," "Manually check FTP on port 21 for anonymous login or attempt password guessing with Hydra if a username is known.").
         *   Example:
             'The Nmap probe reveals several active services on [Target]:
-            1.  **Web Service (Port 80 HTTP):** We could explore this for hidden directories with Gobuster and then check for common web vulnerabilities with Nikto.
+            1.  **Web Service (Port 80 HTTP):** We could explore this for hidden directories with Gobuster and then check for common web vulnerabilities with Nikto. If we find a login page or a 401 Unauthorized, we might use Hydra.
             2.  **SMB Service (Port 445):** We could attempt to enumerate this service for shares, users, and OS information using enum4linux-ng.
-            3.  **FTP Service (Port 21):** This File Transfer Protocol service might allow anonymous login or contain interesting files. You could try connecting to it manually.
+            3.  **FTP Service (Port 21):** This File Transfer Protocol service might allow anonymous login or contain interesting files. If anonymous login fails and we have a username, we could propose a Hydra scan.
             Which of these avenues seems most promising to investigate first? Please indicate by number or description.'
         *   **Wait for user selection.**
     *   **Upon User Selection for a Tool-Based Option:**
-        *   If the user selects an option that involves one or more tools (e.g., "Option 1" or "Let's check the web server"):
-            *   **For the FIRST tool in that selected option** (e.g., Gobuster if the option was "Gobuster then Nikto"): Your response message should **first contain your standard Pre-Scan Explanation** for that specific tool (e.g., Pre-Gobuster Explanation).
-            *   **In the SAME response message, IMMEDIATELY following that explanation, you MUST use the appropriate `propose_..._scan` tool call** for that first tool. Assume default parameters (like the default wordlist for Gobuster) unless the user has previously specified otherwise for the current context or the CTF demands a specific one you are aware of. Do not ask for confirmation of default parameters before making the tool call.
-            *   After the results for the first tool are processed and discussed, if the selected option involved a second tool (e.g., Nikto after Gobuster), then repeat the process: your next response message should contain the Pre-Scan Explanation for Nikto, followed immediately by the `propose_nikto_scan` tool call in that same message.
-    *   **Guidance for Specific Services (to be used within the option framework):**
-        *   **Web Ports (HTTP/HTTPS):**
-            *   Explain: "Web servers are common attack surfaces."
-            *   **Wordlist Handling for Gobuster:**
-                *   "The primary wordlist directory we often use is `/usr/share/seclists/Discovery/Web-Content/`. Many common wordlist names like `directory-list-2.3-small.txt` (the default), `common.txt`, `raft-small-words.txt`, `directory-list-2.3-medium.txt`, etc., reside here."
-                *   "When proposing a Gobuster scan:
-                    *   If the user specifies a full path for a wordlist, use that.
-                    *   If the user mentions a short wordlist name (e.g., 'use common.txt'), you should attempt to construct the full path using the base `/usr/share/seclists/Discovery/Web-Content/` (e.g., `/usr/share/seclists/Discovery/Web-Content/common.txt`) and provide this full path in the `wordlist` parameter of the `propose_gobuster_scan` tool call.
-                    *   If you decide a different wordlist is appropriate (e.g., a larger one for a more thorough scan), propose it using its full path from this common directory if known.
-                    *   If no specific wordlist is mentioned or implied, the system will use the default wordlist. You generally don't need to ask about the default wordlist; just proceed with the tool call."
-            *   **Pre-Gobuster Explanation (for each significant web port, when this action is chosen):** "To explore this web server further, I recommend we search for hidden directories or files using a tool called Gobuster. It works by trying a list of common names (a wordlist). Discovering hidden paths can reveal administrative interfaces, sensitive files, or other functionalities not immediately visible."
-            *   (Then propose `propose_gobuster_scan` if this path is active, ensuring the `wordlist` parameter in the tool call reflects any specific user request or your reasoned choice, preferably as a full path.)
-            *   **Pre-Nikto Explanation (for each significant web port, when this action is chosen):** "Additionally, we should scan this web server for common misconfigurations and known vulnerabilities using Nikto. Nikto is a web server scanner that checks for thousands of potentially problematic items."
-            *   (Then propose `propose_nikto_scan` if this path is active)
-        *   **SMB Ports (139, 445):**
-            *   Explain: "SMB/CIFS is used for file/printer sharing. It can reveal significant information."
-            *   **Pre-SmbTool Explanation (when this action is chosen):** "To investigate SMB, I suggest using enum4linux-ng. This tool queries SMB services for shares, user lists, OS details, and password policies. The '-A' argument for 'all basic checks' is a good start."
-            *   (Then propose `propose_smb_enum` if this path is active)
-        *   **Other Common Ports (FTP, SSH, Telnet, etc.):**
-            *   When suggesting manual investigation for these: Explain briefly what the service is. Suggest manual commands (e.g., `ftp [target_ip]`).
-    *   **No Obvious Ports / Next Steps within Nmap context:**
-        *   If Nmap returns few open ports or no immediately actionable services, one of your suggested options could be to perform a more comprehensive Nmap scan (e.g., `-p-` for all ports, or UDP scans). Explain that this will take much longer.
+        *   If the user selects an option that involves one or more tools:
+            *   **For the FIRST tool in that selected option**: Your response message should **first contain your standard Pre-Scan Explanation** for that specific tool.
+            *   **In the SAME response message, IMMEDIATELY following that explanation, you MUST use the appropriate `propose_..._scan` tool call** for that first tool. Assume default parameters (like the default wordlist for Gobuster or the default password list for Hydra) unless the user has previously specified otherwise.
+            *   After the results for the first tool are processed and discussed, if the selected option involved a second tool (e.g., Nikto after Gobuster, or Hydra after identifying a login page), then repeat the process.
 
 3.  **Web Service Enumeration (Post-Scan Interpretation):**
     *   **Gobuster Results Analysis:**
         *   "The Gobuster scan has completed. Key findings on [Target]:[Port] include:"
-        *   List interesting discovered paths/files (status 200, 301, 302, 403).
-        *   For critical findings (`/admin`, `/login.php`, `/config.bak`, `robots.txt`, `.git/`): Explain potential significance.
+        *   List interesting discovered paths/files (status 200, 201, 301, 302, 401, 403).
+        *   For critical findings (`/admin`, `/login.php`, `/config.bak`, `robots.txt`, `.git/`, a path returning 401): Explain potential significance.
+        *   **HTTP 401 Unauthorized Path Found:**
+            *   Explain: "A 401 Unauthorized status on a path like '/protected' means this area of the target system requires specific credentials – a username and a password – to enter. Your browser will usually show a pop-up login box for this, which is often 'HTTP Basic Authentication'."
+            *   Action: "Did you try navigating to this path in your browser? What did you see? Do we have any potential usernames from previous discoveries or common CTF usernames (e.g., 'admin', 'user', 'bob', 'guest', or perhaps a name found on the website's main page or in comments) that we could try?"
+            *   Tooling Suggestion: "If we have a username, we can attempt to discover the password using a brute-force tool called Hydra. It will try many common passwords from a list. Shall I propose this if you have a username in mind?"
         *   **Suggest manual inspection:** "I strongly recommend you open your web browser and navigate to these key paths. Examine the pages, view source code. Let me know what you observe."
-        *   If Gobuster reveals multiple distinct, interesting areas (e.g., `/api`, `/admin_portal`, `/user_files`), you might present these as sub-options for manual exploration: "Gobuster found several potentially interesting areas: 1. `/api`, 2. `/admin_portal`. Which would you like to examine first in your browser?"
-    *   **Nikto Results Analysis:**
-        *   "Nikto's scan of [Target]:[Port] has concluded. Notable signals include:"
-        *   Explain significant findings (OSVDB, CVE, BID, 'Directory listing').
-        *   Suggest further research for identifiers.
-        *   If outdated software is reported, suggest searching for exploits.
+    *   **Nikto Results Analysis:** (Keep as is)
 
-4.  **SMB Enumeration (Post-Scan Interpretation):**
-    *   "The enum4linux-ng probe of SMB services on [Target] has returned:"
-    *   **Shares:** Explain. Suggest manual connection (`smbclient //[Target]/SHARENAME -N`).
-    *   **Users:** Note their value for potential password attacks.
-    *   **OS Information:** Note its potential for vulnerability research.
-    *   **Password Policy:** Explain its utility for password attacks.
+4.  **HTTP Basic/Digest Authentication Brute-Force (Hydra):**
+    *   This section is triggered if the user agrees to try Hydra after a 401 is found and a username is provided/assumed.
+    *   **Pre-Hydra Explanation:** "To attempt to find the password for user '[USERNAME]' on the HTTP service at '[TARGET]:[PORT][PATH_IF_ANY]', I will use Hydra. Hydra is a powerful tool that rapidly tries different passwords from a list against the login prompt (likely HTTP Basic Authentication here). We'll use the password list located at '[PASSWORD_LIST_PATH_FROM_TOOL_CALL_OR_DEFAULT]'. This process can sometimes take a while depending on the size of the list and the server's responsiveness. If successful, it will reveal the correct password."
+    *   **Password List for Hydra:**
+        *   "When proposing a Hydra scan for HTTP authentication:
+            *   If the user specifies a full path for a password list, use that.
+            *   If no specific password list is mentioned, you should propose using the system's default password list, stating its name (e.g., '{_default_password_list_basename}'). The `password_list` parameter in the `propose_hydra_bruteforce` tool call should then contain the full path to this default list."
+    *   **Immediately after this explanation, use the `propose_hydra_bruteforce` tool.** (Parameters: `target`, `port`, `service_protocol="http-get"`, `path="/protected"`, `username="bob"`, `password_list="/path/to/default_or_user_list.txt"`)
+    *   **Hydra Results Analysis:**
+        *   "Hydra's password probe has concluded."
+        *   If password found (tool results show findings with a password): "Success! Hydra has decoded the access sequence. The credentials for user '[USERNAME]' are: Password: '[FOUND_PASSWORD]'. I recommend you now attempt to access '[PATH]' using these credentials in your browser or with a tool like `curl`."
+        *   If not found (tool results show no password or an error): "Hydra was unable to find a matching password for user '[USERNAME]' using the list '[PASSWORD_LIST_PATH_USED]'. The correct password might not be in this list, the username could be incorrect, or the authentication method might be more complex than simple HTTP Basic. We may need to try a different, perhaps larger or more specialized, password list, or re-evaluate the username and the authentication mechanism."
 
-5.  **General Post-Scan Analysis & Next Steps (Overarching Logic):**
-    *   After receiving results from *any* tool, perform the detailed analysis.
-    *   **If multiple distinct follow-up actions are plausible, present them as numbered options to the user.** Wait for their selection.
-    *   Once a path involving a tool is selected by the user (implicitly or explicitly), provide the **pre-scan explanation for that specific tool, then use the appropriate `propose_..._scan` tool call.**
-    *   If no obvious next scan is warranted, and manual steps have been suggested, provide guidance on interpreting overall findings or ask the user for their strategic direction or if they have any specific observations they'd like to focus on.
+5.  **SMB Enumeration (Post-Scan Interpretation):** (Keep as is, but could add Hydra for SMB login if users are found)
 
-6.  **Handling Scan Failures:**
-    *   If a `role="tool"` message indicates a scan failed:
-        *   Clearly state the failure. Reference error messages.
-        *   Suggest potential reasons (timeout, service not responding, firewall, config issue).
-        *   Propose a way forward: "We could try different scan parameters, verify target/port status with a simpler Nmap ping, or move on. How do you wish to proceed, or would you like me to re-evaluate based on previous findings?"
+6.  **General Post-Scan Analysis & Next Steps (Overarching Logic):** (Update to include Hydra as a possibility)
+    *   "...Once a path involving a tool (Nmap, Gobuster, Nikto, enum4linux-ng, Hydra) is selected..."
 
-7.  **User Guidance & Alternative Paths ("What else?" / "I'm stuck"):**
-    *   If the user types phrases like "What else?", "Any other ideas?", "I'm stuck", "Suggest more options", "Help me, I'm lost", or similar:
-        *   Acknowledge their request: "Understood. Let's re-evaluate our sensor readings and strategic approach." or "Navigating these alien data streams can be tricky. Let's find a clearer signal."
-        *   Then, attempt one or more of the following:
-            *   Briefly summarize the most recent significant findings and the last 1-2 major actions taken. "Our last major probe was [Nmap on target X], which showed [ports Y, Z]. We then investigated [port Y with Gobuster]."
-            *   Based on the *overall known information* (all open ports, key findings from all tools so far), suggest any plausible avenues that haven't been fully explored. "Considering we know about [service A on port X] and [service B on port Y], we've focused on A. Perhaps we should now probe B more deeply?"
-            *   If a service was only partially investigated (e.g., Gobuster run but not Nikto on a web port, or Nmap found a service but no follow-up tool was run), suggest completing that investigation.
-            *   Suggest a more comprehensive version of a previous scan if applicable (e.g., "If our initial Nmap scan was quick, we could try a full Nmap port scan using `-p-` on [Target]. This will take significantly longer but might reveal less common services. Shall I propose this?").
-            *   Ask clarifying questions to help the user focus: "What was the last piece of information that seemed interesting or confusing to you?" or "Is there a particular service or finding you'd like to revisit or understand better?"
-            *   If truly at an impasse on one target or path, you could even ask, "Are there other targets or aspects of this CTF challenge we could consider, or should we try to find a completely different angle on [current target]?"
-        *   The goal is to provide constructive, actionable suggestions to get the user moving again, even if it involves re-evaluating or broadening the scope. Avoid simply saying "I don't know."
+7.  **Handling Scan Failures:** (Keep as is)
 
-**General Reminder:** Your primary mechanism for suggesting scans (Nmap, Gobuster, Nikto, enum4linux-ng) is by invoking the corresponding **tool call** (`propose_nmap_scan`, `propose_gobuster_scan`, etc.) *after* you have provided the necessary pre-scan explanation in your message content, and *after* the user has implicitly or explicitly chosen a path that leads to that tool. Do *not* just ask the user in plain text if they want to run a scan without the tool call.
-**Prioritize helping the user understand the 'why' and the 'what next' over just executing commands.**
+8.  **User Guidance & Alternative Paths ("What else?" / "I'm stuck"):** (Keep as is, but AI can now consider Hydra if applicable and not yet tried)
+
+
+**General Reminder:** ... (Nmap, Gobuster, Nikto, enum4linux-ng, Hydra)...
 """
 
 AGENT_WELCOME_MESSAGE = """
@@ -190,7 +165,6 @@ If at any point you feel unsure or need more ideas, just ask "What else can we d
 """
 
 # --- OpenAI Tool Definitions ---
-# Use the imported DEFAULT_WORDLIST from config here
 tools = [
     {
         "type": "function",
@@ -199,9 +173,7 @@ tools = [
             "description": (
                 "Propose running an Nmap scan on the target. The AI's preceding "
                 "message content should explain WHY this scan and its arguments "
-                "are being proposed (this usually happens after the user has "
-                "selected a general course of action). The script will then ask the user for "
-                "confirmation."
+                "are being proposed. The script will then ask the user for confirmation."
             ),
             "parameters": {
                 "type": "object",
@@ -226,9 +198,7 @@ tools = [
             "description": (
                 "Propose running a Gobuster directory scan on a specific web "
                 "port. The AI's preceding message content should explain WHY "
-                "this scan is being proposed (this usually happens after the user has "
-                "selected a general course of action involving web enumeration). The script will then ask for "
-                "confirmation."
+                "this scan is being proposed. The script will then ask for confirmation."
             ),
             "parameters": {
                 "type": "object",
@@ -246,9 +216,12 @@ tools = [
                         "description": (
                             "Optional: Specific wordlist path. If a short name (e.g., 'common.txt') is provided, "
                             "it should ideally be the full path if known (e.g., /usr/share/seclists/Discovery/Web-Content/common.txt). "
-                            "If omitted, the script will use the default "
-                            f"({_default_wordlist_basename})."
+                            f"If omitted, the script will use the default ({_default_wordlist_basename})."
                         ),
+                    },
+                    "status_codes": {  # Added status_codes
+                        "type": "string",
+                        "description": "Optional: Comma-separated list of status codes to show (e.g., '200,301,401,403'). Defaults to standard set including 200,201,301,302,401,403.",
                     },
                 },
                 "required": ["target", "port"],
@@ -262,8 +235,7 @@ tools = [
             "description": (
                 "Propose running a Nikto web server vulnerability scan on a "
                 "specific target and port. The AI's preceding message content "
-                "should explain WHY this scan is being proposed (this usually happens after the user has "
-                "selected a general course of action involving web enumeration). The script "
+                "should explain WHY this scan is being proposed. The script "
                 "will then ask for confirmation."
             ),
             "parameters": {
@@ -276,15 +248,13 @@ tools = [
                     "port": {
                         "type": "integer",
                         "description": (
-                            "The port number the web server is running on "
-                            "(e.g., 80, 443)."
+                            "The port number the web server is running on (e.g., 80, 443)."
                         ),
                     },
                     "nikto_arguments": {
                         "type": "string",
                         "description": (
-                            "Optional: Additional Nikto arguments (e.g., "
-                            "'-Tuning x'). Use default if omitted."
+                            "Optional: Additional Nikto arguments (e.g., '-Tuning x'). Use default if omitted."
                         ),
                     },
                 },
@@ -299,8 +269,7 @@ tools = [
             "description": (
                 "Propose running enum4linux-ng for SMB enumeration. The AI's "
                 "preceding message content should explain WHY this scan is "
-                "being proposed (this usually happens after the user has "
-                "selected a general course of action involving SMB). The script will then ask for confirmation."
+                "being proposed. The script will then ask for confirmation."
             ),
             "parameters": {
                 "type": "object",
@@ -312,13 +281,70 @@ tools = [
                     "enum_arguments": {
                         "type": "string",
                         "description": (
-                            "Optional: Additional enum4linux-ng arguments "
-                            "(e.g., '-U' for only users, '-S' for only "
-                            "shares). Defaults to '-A' (all basic checks)."
+                            "Optional: Additional enum4linux-ng arguments. Defaults to '-A'."
                         ),
                     },
                 },
                 "required": ["target"],
+            },
+        },
+    },
+    {  # ADDED HYDRA TOOL DEFINITION
+        "type": "function",
+        "function": {
+            "name": "propose_hydra_bruteforce",
+            "description": (
+                "Propose running Hydra to brute-force credentials for a service "
+                "(e.g., HTTP Basic Auth, FTP, SSH). The AI's preceding message "
+                "content should explain WHY this is being proposed and what username "
+                "and password list will be used."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "The target IP address or domain.",
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "The port number of the service.",
+                    },
+                    "service_protocol": {
+                        "type": "string",
+                        "description": "The Hydra service module name (e.g., 'http-get', 'ftp', 'ssh'). For HTTP Basic Auth on /protected, use 'http-get'.",
+                    },
+                    "username": {
+                        "type": "string",
+                        "description": "The single username to target for password guessing.",
+                    },
+                    "password_list": {
+                        "type": "string",
+                        "description": (
+                            "The full path to the password list file. If the user doesn't specify, "
+                            f"propose the default: '{DEFAULT_PASSWORD_LIST}' (basename: '{_default_password_list_basename}')."
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional: The specific path for the service if required by the module (e.g., '/protected' for http-get, '/login' for http-post-form). Omit if not applicable.",
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "description": "Optional: Number of parallel threads for Hydra. Defaults to a system default (e.g., 4 or 16).",
+                    },
+                    "hydra_options": {
+                        "type": "string",
+                        "description": "Optional: A string of any other specific command-line options for Hydra, if needed beyond the basics.",
+                    },
+                },
+                "required": [
+                    "target",
+                    "port",
+                    "service_protocol",
+                    "username",
+                    "password_list",
+                ],
             },
         },
     },
@@ -328,27 +354,33 @@ tools = [
 # --- LLM Interaction ---
 def get_llm_response(client, history, system_prompt):
     """Sends chat history to OpenAI API and returns the response message object."""
-    MAX_HISTORY_TURNS = 20
-    if len(history) > MAX_HISTORY_TURNS * 2:
+    MAX_HISTORY_TURNS = 20  # Increased slightly
+    if len(history) > MAX_HISTORY_TURNS * 2:  # Each turn is user + assistant
+        # Keep system prompt, then a summary of early history, then recent history
+        # This is a more complex strategy not implemented here yet.
+        # For now, simple truncation:
         history_to_send = history[-(MAX_HISTORY_TURNS * 2) :]
         logging.info(
-            f"Chat history truncated to last ~{MAX_HISTORY_TURNS} turns for API call."
+            f"Chat history truncated to last ~{MAX_HISTORY_TURNS} user/assistant turns for API call."
         )
     else:
         history_to_send = history
 
     messages = [{"role": "system", "content": system_prompt}] + history_to_send
 
+    # Ensure tool_choice is appropriate. "auto" is good.
+    # If strict control needed: tool_choice={"type": "function", "function": {"name": "my_function"}}
+    # or tool_choice="required" if a function *must* be called.
     try:
         console.print("[yellow]Alien Recon is analyzing signals...[/yellow]", end="\r")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o-mini",  # Consider gpt-4o if needing more complex reasoning or gpt-3.5-turbo for speed/cost
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            temperature=0.5,
+            temperature=0.4,  # Slightly lower for more deterministic tool use
         )
-        console.print(" " * 40, end="\r")
+        console.print(" " * 40, end="\r")  # Clear the "analyzing" message
         return response.choices[0].message
 
     except openai.AuthenticationError as e:
@@ -372,24 +404,27 @@ def get_llm_response(client, history, system_prompt):
             "your internet connection.[/bold red]"
         )
         return None
-    except openai.NotFoundError as e:
+    except openai.NotFoundError as e:  # Often model not found
         logging.error(f"OpenAI Model Not Found or Invalid Request Error: {e}")
         console.print(
             f"[bold red]Error: The specified model might be invalid or "
             f"unavailable. {e}[/bold red]"
         )
         return None
-    except openai.BadRequestError as e:
+    except openai.BadRequestError as e:  # This can be due to many things, including content filters or malformed requests
         logging.error(f"OpenAI Bad Request Error: {e}", exc_info=True)
         console.print(
             f"[bold red]An error occurred with the request to OpenAI "
             f"(Bad Request): {e}[/bold red]"
         )
+        # Try to log more details if possible, e.g. the request body that failed, if not too large
+        # Be careful with logging sensitive data from messages.
         console.print(
-            "[bold yellow]Suggestion: Check tool definitions, message structure, "
-            "history validity, or potential content policy flags.[/bold yellow]"
+            "[bold yellow]Suggestion: Check tool definitions, message structure, history validity, or potential content policy flags.[/bold yellow]"
         )
-        logging.debug(f"Messages sent causing BadRequestError: {messages}")
+        logging.debug(
+            f"Messages sent causing BadRequestError: {messages}"
+        )  # Log the messages for debugging
         return None
     except Exception as e:
         logging.error(

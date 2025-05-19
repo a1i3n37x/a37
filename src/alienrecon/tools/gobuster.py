@@ -1,4 +1,3 @@
-# src/alienrecon/tools/gobuster.py
 import logging
 import os
 import re
@@ -24,12 +23,18 @@ class GobusterTool(CommandTool):
     executable_name: str = "gobuster"
 
     # Default Gobuster settings (can be overridden via kwargs if needed)
-    DEFAULT_STATUS_CODES = "200,204,301,302,307,403"
+    # Updated to include 201 and 401 as per our findings
+    DEFAULT_STATUS_CODES = "200,201,204,301,302,307,401,403"
     DEFAULT_THREADS = "50"
 
     def build_command(
-        self, target_ip: str, port: int, wordlist: str | None = None, **kwargs
-    ) -> list[str]:
+        self,
+        target_ip: str,
+        port: int,
+        wordlist: str | None = None,
+        status_codes: str | None = None,
+        **kwargs,
+    ) -> list[str]:  # Added status_codes parameter
         """
         Constructs the Gobuster command arguments.
 
@@ -37,7 +42,8 @@ class GobusterTool(CommandTool):
             target_ip: The target IP address or hostname.
             port: The target port number.
             wordlist: Optional path to a specific wordlist. Uses default if None.
-            **kwargs: Additional optional arguments (e.g., threads, status_codes).
+            status_codes: Optional comma-separated string of status codes to show.
+            **kwargs: Additional optional arguments (e.g., threads).
 
         Returns:
             A list of strings for the Gobuster command (excluding the executable).
@@ -51,41 +57,51 @@ class GobusterTool(CommandTool):
         if not port:
             raise ValueError("Port must be provided for Gobuster.")
 
-        # Determine wordlist to use
         wordlist_to_use = wordlist or DEFAULT_WORDLIST
-        if not wordlist_to_use:
+        if (
+            not wordlist_to_use
+        ):  # Should ideally not happen if DEFAULT_WORDLIST is well-defined
+            # This case implies DEFAULT_WORDLIST itself might be None or empty
             raise FileNotFoundError(
-                "No specific wordlist provided and no default wordlist configured."
+                "No specific wordlist provided and no default wordlist configured or found."
             )
         if not os.path.exists(wordlist_to_use):
-            if wordlist_to_use == DEFAULT_WORDLIST:
-                raise FileNotFoundError(
-                    f"Default wordlist not found at '{DEFAULT_WORDLIST}'. "
-                    f"Cannot run Gobuster."
-                )
-            else:
-                # If user specified a non-existent one, try falling back to default
-                # Use module-level logging here in case logger instance isn't ready
-                logging.warning(
-                    f"Specified wordlist '{wordlist}' not found. Attempting "
-                    f"default '{DEFAULT_WORDLIST}'."
-                )
-                if not DEFAULT_WORDLIST or not os.path.exists(DEFAULT_WORDLIST):
-                    raise FileNotFoundError(
-                        f"Specified wordlist '{wordlist}' not found, and default "
-                        f"wordlist '{DEFAULT_WORDLIST}' also not found."
+            # Attempt to expand user-specific paths like ~
+            expanded_path = os.path.expanduser(wordlist_to_use)
+            if os.path.exists(expanded_path):
+                wordlist_to_use = expanded_path
+            else:  # If still not found
+                # If it was the default list that wasn't found
+                if wordlist_to_use == DEFAULT_WORDLIST or (
+                    wordlist and wordlist_to_use == os.path.expanduser(wordlist)
+                ):
+                    # Log clearly if default is missing, but allow execution if Hydra has internal lists
+                    logging.error(
+                        f"CRITICAL: Wordlist for Gobuster not found at '{wordlist_to_use}'. Gobuster will likely fail."
                     )
-                wordlist_to_use = DEFAULT_WORDLIST  # Use default as fallback
+                    raise FileNotFoundError(
+                        f"Gobuster wordlist not found at '{wordlist_to_use}'. Cannot run Gobuster."
+                    )
+                else:  # User specified a list that doesn't exist
+                    logging.warning(
+                        f"Specified wordlist '{wordlist}' not found. Attempting "
+                        f"default '{DEFAULT_WORDLIST}'."
+                    )
+                    if not DEFAULT_WORDLIST or not os.path.exists(DEFAULT_WORDLIST):
+                        raise FileNotFoundError(
+                            f"Specified wordlist '{wordlist}' not found, and default "
+                            f"wordlist '{DEFAULT_WORDLIST}' also not found/configured."
+                        )
+                    wordlist_to_use = DEFAULT_WORDLIST
 
-        # Determine protocol and build URL
         protocol = "https" if port in [443, 8443] else "http"
         target_url = f"{protocol}://{target_ip}:{port}"
 
-        # Get settings, using defaults if not provided in kwargs
-        status_codes = kwargs.get("status_codes", self.DEFAULT_STATUS_CODES)
-        threads = kwargs.get("threads", self.DEFAULT_THREADS)
+        status_codes_to_use = status_codes or self.DEFAULT_STATUS_CODES
+        threads = str(
+            kwargs.get("threads", self.DEFAULT_THREADS)
+        )  # Ensure threads is a string
 
-        # Build command list (This is Alien Recon's default failing command for your case)
         command_args = [
             "dir",
             "-u",
@@ -93,15 +109,21 @@ class GobusterTool(CommandTool):
             "-w",
             wordlist_to_use,
             "-t",
-            str(threads),
-            "-q",  # Alien Recon default
+            threads,
+            "-q",  # Quiet mode to reduce noise
             "-s",
-            status_codes,  # Alien Recon default (includes 301)
+            status_codes_to_use,
             "-b",
-            "",  # Alien Recon default
-            "--no-error",  # Alien Recon default
+            "",  # Don't blacklist any status codes by default with -b
+            "--no-error",  # Suppress error messages for non-existent paths
         ]
-        logger.debug(f"Using wordlist: {wordlist_to_use}")
+
+        # Add extensions if provided, e.g. -x .php,.txt
+        extensions = kwargs.get("extensions")
+        if extensions:
+            command_args.extend(["-x", extensions])
+
+        logger.debug(f"Using Gobuster wordlist: {wordlist_to_use}")
         logger.debug(f"Built Gobuster command args: {command_args}")
         return command_args
 
@@ -110,14 +132,7 @@ class GobusterTool(CommandTool):
     ) -> dict[str, Any]:
         """
         Parses Gobuster text output into a structured dictionary.
-
-        Args:
-            stdout: Raw text output from Gobuster execution.
-            stderr: Error output from Gobuster or run_command.
-            **kwargs: Original arguments (target_ip, port) for context.
-
-        Returns:
-            A dictionary containing the parsed scan results or error information.
+        Now explicitly includes the status code in the findings.
         """
         target_ip = kwargs.get("target_ip")
         port = kwargs.get("port")
@@ -125,31 +140,31 @@ class GobusterTool(CommandTool):
             f"http(s)://{target_ip}:{port}" if target_ip and port else "Unknown Target"
         )
 
-        if stderr and "status-codes-blacklist" in stderr and "are both set" in stderr:
-            return {
-                "scan_summary": (
-                    f"Gobuster scan related to {target_url_context} failed due "
-                    f"to conflicting status code arguments."
-                ),
-                "error": stderr,
-                "suggestion": (
-                    "Try running again. If the error persists, check Gobuster "
-                    "version compatibility or manually adjust arguments."
-                ),
-                "findings": [],
-            }
-        elif stderr and not stdout:
-            return {
-                "scan_summary": (
-                    f"Gobuster scan related to {target_url_context} failed."
-                ),
-                "error": stderr,
-                "findings": [],
-            }
+        # Check for common Gobuster errors first
+        if stderr:
+            if "status-codes and status-codes-blacklist are both set" in stderr:
+                return {
+                    "scan_summary": f"Gobuster scan for {target_url_context} failed due to conflicting status code arguments.",
+                    "error": stderr.strip(),
+                    "suggestion": "Ensure that status_codes (-s) and status_codes_blacklist (-b) are not used in a conflicting manner if custom arguments are passed.",
+                    "findings": [],
+                }
+            # Other specific Gobuster errors can be checked here
+            # For now, if stderr exists and stdout is empty, assume failure
+            if not stdout:
+                return {
+                    "scan_summary": f"Gobuster scan for {target_url_context} failed or produced no output.",
+                    "error": stderr.strip(),
+                    "findings": [],
+                }
+            else:  # stderr might contain warnings even on success
+                logger.warning(
+                    f"Gobuster for {target_url_context} reported to stderr: {stderr[:200]}"
+                )
 
         findings = []
         count = 0
-        limit = 50
+        limit = 100  # Increased limit slightly
         truncated = False
 
         raw_url_base = ""
@@ -158,63 +173,121 @@ class GobusterTool(CommandTool):
             raw_url_base = f"{protocol}://{target_ip}:{port}"
 
         if stdout:
-            output_lines = stdout.strip().splitlines()
-            for line_idx, line_content in enumerate(output_lines):  # Use enumerate
-                line = line_content.strip()
+            # Gobuster output line format:
+            # /path (Status: CODE) [Size: SIZE] --> /redirect_url (if 301/302)
+            # We need to capture path, status, and optionally size/redirect.
+            # Regex: ^\s*(/[^\s\(]+(?:\.\w+)?)\s*\(Status:\s*(\d+)\)(?:\s*\[Size:\s*(\d+)\])?(?:\s*\[-->\s*([^\s]+)\])?
+            # Breakdown:
+            # ^\s*                  -> Start of line, optional leading space
+            # (/[^\s\(]+(?:\.\w+)?) -> Group 1: Path (starts with /, no space/paren, optionally ends with .ext)
+            # \s*\(Status:\s*(\d+)\) -> Group 2: Status code (e.g., (Status: 200))
+            # (?:\s*\[Size:\s*(\d+)\])? -> Optional Group 3: Size (e.g., [Size: 1234])
+            # (?:\s*\[-->\s*([^\s]+)\])?-> Optional Group 4: Redirect URL (e.g., [--> http://new.url/])
 
-                # Original processing logic from here:
-                if not line or line.startswith(("#", "==", "Progress:", "[-]", "[+]")):
+            # Simpler initial regex just for path and status, then refine
+            # line_pattern = re.compile(r"^\s*(?P<path>[^\s(]+)\s*\(Status:\s*(?P<status>\d+)\)")
+            # More robust pattern:
+            line_pattern = re.compile(
+                r"^(?P<path>[^ \t(]+)"  # Path: non-space, non-tab, non-( characters
+                r"\s*\(Status:\s*(?P<status>\d{3})\)"  # Status: (Status: XXX)
+                r"(?:\s*\[Size:\s*(?P<size>\d+)\])?"  # Optional Size: [Size: NNN]
+                r"(?:\s*\[-->\s*(?P<redirect>[^\]]+)\])?"  # Optional Redirect: [--> URL]
+            )
+
+            output_lines = stdout.strip().splitlines()
+            for line_content in output_lines:
+                line = line_content.strip()
+                if not line or line.startswith(
+                    ("#", "==", "Progress:", "[-]", "[+]")
+                ):  # Skip comments/progress
                     continue
+
                 if count >= limit:
                     truncated = True
                     break
 
-                match = re.search(r"^(.+?)\s+\(Status:\s*(\d+)\)", line)
+                match = line_pattern.match(line)
                 if match:
-                    path = match.group(1).strip()
-                    if not path.startswith(
+                    path_found = match.group("path").strip()
+                    # Ensure path starts with a slash if it's not a full URL already (Gobuster usually outputs relative paths)
+                    if not path_found.startswith(
                         ("http://", "https://")
-                    ) and not path.startswith("/"):
-                        path = "/" + path
-                    status = match.group(2)
-                    full_url = (
-                        f"{raw_url_base.rstrip('/')}{path}"
-                        if raw_url_base and path.startswith("/")
-                        else path
-                    )
-                    findings.append({"url_or_path": full_url, "status": status})
-                    count += 1
-                elif "(Status:" in line:  # Fallback
-                    findings.append({"raw": line})
-                    count += 1
+                    ) and not path_found.startswith("/"):
+                        path_found = "/" + path_found
 
-        summary = f"Gobuster scan related to {target_url_context} completed."
-        if stderr:
-            summary += " Scan completed with potential issues."
-            findings.append({"warning": f"Scan stderr reported: {stderr.strip()}"})
+                    status_found = match.group("status")
+                    item = {"path": path_found, "status": status_found}
+
+                    if raw_url_base and path_found.startswith("/"):
+                        item["full_url"] = f"{raw_url_base.rstrip('/')}{path_found}"
+                    else:  # If path_found is already a full URL or no base
+                        item["full_url"] = path_found
+
+                    if match.group("size"):
+                        item["size"] = match.group("size")
+                    if match.group("redirect"):
+                        item["redirect_to"] = match.group("redirect").strip()
+
+                    findings.append(item)
+                    count += 1
+                elif (
+                    "(Status:" in line
+                ):  # Fallback for lines that might not perfectly match but contain status
+                    logger.debug(
+                        f"Gobuster line with '(Status:' but not fully matched by regex: {line}"
+                    )
+                    # Try a simpler extraction if main regex fails for some lines
+                    simple_match = re.search(r"^(.+?)\s+\(Status:\s*(\d+)\)", line)
+                    if simple_match:
+                        path_simple = simple_match.group(1).strip()
+                        if not path_simple.startswith(
+                            ("http://", "https://")
+                        ) and not path_simple.startswith("/"):
+                            path_simple = "/" + path_simple
+                        status_simple = simple_match.group(2)
+                        findings.append(
+                            {
+                                "path": path_simple,
+                                "status": status_simple,
+                                "full_url": f"{raw_url_base.rstrip('/')}{path_simple}"
+                                if raw_url_base
+                                else path_simple,
+                                "comment": "Parsed with fallback regex",
+                            }
+                        )
+                        count += 1
+                    else:
+                        findings.append(
+                            {"raw_unparsed_finding": line}
+                        )  # Store raw if no parse
+                        count += 1
+
+        summary = f"Gobuster scan for {target_url_context} completed."
+        if stderr and not (
+            len(findings) > 0 and "error" not in findings
+        ):  # Don't override summary if findings exist and no major error
+            summary += " Scan completed with potential issues noted in stderr."
 
         if findings:
             actual_findings_count = sum(
-                1 for f in findings if "raw" not in f and "warning" not in f
+                1 for f in findings if "raw_unparsed_finding" not in f
             )
             if actual_findings_count > 0:
                 summary += f" Found {actual_findings_count} potential paths/files."
-            elif any("warning" in f for f in findings):
-                summary += (
-                    " No standard paths/files parsed, but warnings were reported."
-                )
-            else:  # Only raw findings or no findings apart from warnings
+            elif any("raw_unparsed_finding" in f for f in findings):
+                summary += " Some output lines could not be fully parsed."
+            else:  # No actual findings parsed
                 summary += " No standard paths/files parsed from output."
         elif not stderr:  # No findings and no error in stderr
-            summary += " No findings reported."
+            summary += " No findings reported by Gobuster."
 
         if truncated:
             summary += f" (Results limited to first {limit} findings)."
 
         result_dict = {"scan_summary": summary, "findings": findings}
         if (
-            stderr and not stdout
-        ):  # Only add error key if stderr was primary indicator of failure
-            result_dict["error"] = stderr
+            stderr and "error" not in result_dict
+        ):  # If stderr exists and we haven't already set a specific error field
+            result_dict["stderr_output"] = stderr.strip()
 
         return result_dict
