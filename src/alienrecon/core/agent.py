@@ -393,7 +393,7 @@ def get_llm_response(client, history, system_prompt):
     try:
         console.print("[yellow]Alien Recon is analyzing signals...[/yellow]", end="\r")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             messages=messages,
             tools=tools,
             tool_choice="auto",
