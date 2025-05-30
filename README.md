@@ -7,7 +7,7 @@ Born in the void between signal and silence, **a37** leads you from **zero to fi
 
 ---
 
-## 🧠 What is a37?
+## 🧠 What is a37?!
 
 Alien Recon is a modular, CLI-driven recon framework built for **beginner ethical hackers** looking to crush their first boxes — and for pros who don’t have time to type out the same 12 commands every time.
 
@@ -23,7 +23,7 @@ No fluff. No filler. Just pure recon, injected with AI guidance and weaponized e
 ### 🚀 Upcoming Features
 - 🔁 `--auto` mode with smart task-chaining
 - 🧬 MITRE ATT&CK technique tagging for each recon step
-- 🕷️ Pro Mode: nuclei, ffuf, searchsploit, and advanced exploitation scaffolding
+- 🕷️ Pro Mode: ...
 - 📜 `debrief` generator: full recon summary + attack paths
 
 ---
@@ -107,4 +107,4 @@ one port, one banner, one cracked password at a time.
 
 Stay weird.
 Stay sharp.
-**H4ck th3 pl4n3t.**
+**h4ck th3 pl4n3t.**
