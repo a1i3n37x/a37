@@ -29,7 +29,7 @@ Just pure, weaponized enumeration with AI in your corner like a rogue sysadmin f
 - 🧙 One-liner flow:
   `alienrecon recon <target>`
 - 🧼 Sanity checker:
-  `alienrecon doctor` make sure your system isn’t dead on arrival
+  `alienrecon doctor` make sure your system isn't dead on arrival
 
 ---
 
@@ -55,28 +55,36 @@ poetry install
 
 ## 💾 Usage
 
-```bash
-# Launch basic recon
-alienrecon recon <target-ip>
+### Recommended: Assistant-Driven Workflow
 
-# Run system diagnostics
-alienrecon doctor
+The primary way to use Alien Recon is through the conversational AI assistant. Start a session and interact naturally:
 
-# Go full novice mode (AI co-pilot enabled)
-alienrecon recon <target-ip> --novice
+```sh
+alienrecon
 ```
+
+You can then type commands like:
+- "Scan 10.10.10.10 with nmap"
+- "Run gobuster on the web server"
+- "What do these results mean?"
+
+The assistant will guide you, run tools, explain results, and manage your recon session.
+
+### Advanced: Manual Tool Subcommands
+
+You can run tools directly (e.g., `alienrecon nmap ...`), but this bypasses the assistant and session features. Results are managed, but you lose conversational AI guidance. This mode is for advanced/manual use only.
 
 ---
 
 ## 🧼 Design Ethos
 
-**a37** isn’t just about port scans... it’s about mindset.
-It’s built to teach you how to think like an operator, not just copy-paste one. Every scan is a story. Every banner is a clue.
+**a37** isn't just about port scans... it's about mindset.
+It's built to teach you how to think like an operator, not just copy-paste one. Every scan is a story. Every banner is a clue.
 
-With AI-guided flows, clean output, and zero bloat, you’ll move faster, learn deeper, and stay focused.
-Whether you’re chasing your first shell or fine-tuning your process, **Alien Recon** keeps you in the fight.
+With AI-guided flows, clean output, and zero bloat, you'll move faster, learn deeper, and stay focused.
+Whether you're chasing your first shell or fine-tuning your process, **Alien Recon** keeps you in the fight.
 
-Because recon isn’t about information. It’s about **momentum**.
+Because recon isn't about information. It's about **momentum**.
 
 ---
 
@@ -91,10 +99,10 @@ Because recon isn’t about information. It’s about **momentum**.
 ## 💀 Legal Pulse Check
 
 This is an **offensive security** tool.
-It’s built for **legal, educational, and consensual engagements** only.
-Use it wrong, and you’re not a hacker... you’re a dumbass with a felony.
+It's built for **legal, educational, and consensual engagements** only.
+Use it wrong, and you're not a hacker... you're a dumbass with a felony.
 
-**Alien37 doesn’t pay bail.**
+**Alien37 doesn't pay bail.**
 
 ---
 

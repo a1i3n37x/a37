@@ -4,6 +4,9 @@ import os
 
 import openai
 
+# Import the LLM_TOOL_FUNCTIONS registry
+from ..tools.llm_functions import LLM_TOOL_FUNCTIONS
+
 # Import necessary items from config
 from .config import DEFAULT_PASSWORD_LIST, DEFAULT_WORDLIST, console
 
@@ -45,7 +48,7 @@ become directly relevant and can be explained simply.
 
 Be conversational and interactive, but also **concise and directive when guiding
 the next step.** Explain *why* a step is taken briefly.
-Do not perform any actions yourself beyond analysis and suggestions. **WHEN you determine a specific scan or action (like Nmap, Gobuster, Hydra, or fetching web page content) is the logical next step based on the current context and findings, you MUST use the available 'tools' (function calls) to propose this action, but always wait for the user's confirmation or selection before proceeding.**
+Do not perform any actions yourself beyond analysis and suggestions. **WHEN you determine a specific scan or action is the logical next step based on the current context and findings, you MUST use the available 'tools' (function calls) to propose this action, but always wait for the user's confirmation or selection before proceeding.**
 
 **Manual, User-Driven Workflow Instructions:**
 - Always present actionable options to the user after summarizing findings.
@@ -57,12 +60,12 @@ Do not perform any actions yourself beyond analysis and suggestions. **WHEN you 
 - Always prioritize education, clarity, and user control over automation.
 
 **Standard CTF Recon Flow:**
-- Unless the user requests otherwise, always begin with a fast Nmap scan using `-Pn <target>` (top 1000 ports, Nmap default) to quickly identify open TCP ports, since CTF targets often block ping/ICMP and most services are on common ports.
-- After identifying open ports, suggest a service/version detection scan (e.g., `nmap -sV -p<open_ports> <target>`).
-- Only move to web content fetching or other service-specific enumeration after the initial Nmap steps, unless the user explicitly requests otherwise.
-- For the very first step, always propose the Nmap scan as a tool call, not just a question or suggestion.
+- Unless the user requests otherwise, always begin with a fast Nmap scan using the `nmap_scan` function. For an initial scan, good parameters would be `scan_type="SYN"`, `top_ports=1000` (to quickly check common TCP ports), and consider adding `custom_arguments="-Pn"` if ping is likely blocked (common in CTFs). This helps quickly identify open TCP ports.
+- After identifying open ports from this initial `nmap_scan`, suggest a more detailed follow-up scan using `nmap_scan` again, this time perhaps with `service_detection=True` and targeting the specific open ports found (e.g., `ports="22,80,443"`). You might also consider `os_detection=True` or `run_scripts=True` (for default scripts) at this stage if appropriate.
+- Only move to web content fetching or other service-specific enumeration after these initial Nmap steps have identified relevant services, unless the user explicitly requests otherwise.
+- For the very first step, always propose an appropriate `nmap_scan` as a tool call, not just a question or suggestion.
 
-**General Reminder:** Your primary mechanism for suggesting scans or actions (Nmap, Gobuster, Nikto, enum4linux-ng, Hydra, fetching web content) is by invoking the corresponding **tool call** (`propose_nmap_scan`, `propose_gobuster_scan`, etc.) *after* you have provided the necessary pre-scan/action explanation in your message content, and *after* the user has implicitly or explicitly chosen a path that leads to that tool/action. Do *not* just ask the user in plain text if they want to run something without the tool call.
+**General Reminder:** Your primary mechanism for suggesting scans or actions is by invoking the corresponding **tool call** *after* you have provided the necessary pre-scan/action explanation in your message content, and *after* the user has implicitly or explicitly chosen a path that leads to that tool/action. Do *not* just ask the user in plain text if they want to run something without the tool call.
 **Prioritize helping the user understand the 'why' and the 'what next' over just executing commands.**
 """
 
@@ -107,211 +110,55 @@ If you get stuck or want more ideas, just ask "What else can we do?" or "I'm stu
 """
 
 # --- OpenAI Tool Definitions ---
-tools = [
-    {  # ADDED HTTP PAGE FETCHER TOOL DEFINITION
-        "type": "function",
-        "function": {
-            "name": "propose_fetch_web_content",
-            "description": (
-                "Proposes to fetch and analyze the HTML/text content of a specific web page "
-                "(e.g., an index page or an interesting path found by Gobuster). "
-                "This is used to gather context for the LLM to analyze for clues like usernames, comments, or technologies."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url_to_fetch": {
-                        "type": "string",
-                        "description": "The full URL of the web page to fetch (e.g., 'http://target.com/index.html'). Must include http:// or https://.",
-                    }
-                },
-                "required": ["url_to_fetch"],
+# Dynamically generate the tools list from LLM_TOOL_FUNCTIONS
+tools = []
+for func_name, func_details in LLM_TOOL_FUNCTIONS.items():
+    # Ensure parameters are structured correctly for OpenAI
+    # The 'parameters' from LLM_TOOL_FUNCTIONS corresponds to 'properties' for OpenAI
+    openai_params = {
+        "type": "object",
+        "properties": func_details.get("parameters", {}),
+    }
+    required_params = func_details.get("required", [])
+    if required_params:
+        openai_params["required"] = required_params
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": func_name,
+                "description": func_details.get("description", ""),
+                "parameters": openai_params,
             },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_nmap_scan",
-            "description": (
-                "Propose running an Nmap scan on the target. The AI's preceding "
-                "message content should explain WHY this scan and its arguments "
-                "are being proposed. The script will then ask the user for confirmation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The IP address or domain to scan.",
-                    },
-                    "arguments": {
-                        "type": "string",
-                        "description": ("Suggested Nmap arguments (e.g., '-sV -T4')."),
-                    },
-                },
-                "required": ["target", "arguments"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_gobuster_scan",
-            "description": (
-                "Propose running a Gobuster directory scan on a specific web "
-                "port. The AI's preceding message content should explain WHY "
-                "this scan is being proposed. The script will then ask for confirmation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The target IP or domain.",
-                    },
-                    "port": {
-                        "type": "integer",
-                        "description": ("The port number to scan (e.g., 80, 443)."),
-                    },
-                    "wordlist": {
-                        "type": "string",
-                        "description": (
-                            "Optional: Specific wordlist path. If a short name (e.g., 'common.txt') is provided, "
-                            "it should ideally be the full path if known (e.g., /usr/share/seclists/Discovery/Web-Content/common.txt). "
-                            f"If omitted, the script will use the default ({_default_wordlist_basename})."
-                        ),
-                    },
-                    "status_codes": {
-                        "type": "string",
-                        "description": "Optional: Comma-separated list of status codes to show (e.g., '200,301,401,403'). Defaults to standard set including 200,201,301,302,401,403.",
-                    },
-                },
-                "required": ["target", "port"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_nikto_scan",
-            "description": (
-                "Propose running a Nikto web server vulnerability scan on a "
-                "specific target and port. The AI's preceding message content "
-                "should explain WHY this scan is being proposed. The script "
-                "will then ask for confirmation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The target IP address or hostname.",
-                    },
-                    "port": {
-                        "type": "integer",
-                        "description": (
-                            "The port number the web server is running on (e.g., 80, 443)."
-                        ),
-                    },
-                    "nikto_arguments": {
-                        "type": "string",
-                        "description": (
-                            "Optional: Additional Nikto arguments (e.g., '-Tuning x'). Use default if omitted."
-                        ),
-                    },
-                },
-                "required": ["target", "port"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_smb_enum",
-            "description": (
-                "Propose running enum4linux-ng for SMB enumeration. The AI's "
-                "preceding message content should explain WHY this scan is "
-                "being proposed. The script will then ask for confirmation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The target IP address or hostname.",
-                    },
-                    "enum_arguments": {
-                        "type": "string",
-                        "description": (
-                            "Optional: Additional enum4linux-ng arguments. Defaults to '-A'."
-                        ),
-                    },
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_hydra_bruteforce",
-            "description": (
-                "Propose running Hydra to brute-force credentials for a service "
-                "(e.g., HTTP Basic Auth, FTP, SSH). The AI's preceding message "
-                "content should explain WHY this is being proposed and what username "
-                "and password list will be used."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The target IP address or domain.",
-                    },
-                    "port": {
-                        "type": "integer",
-                        "description": "The port number of the service.",
-                    },
-                    "service_protocol": {
-                        "type": "string",
-                        "description": "The Hydra service module name (e.g., 'http-get', 'ftp', 'ssh'). For HTTP Basic Auth on /protected, use 'http-get'.",
-                    },
-                    "username": {
-                        "type": "string",
-                        "description": "The single username to target for password guessing.",
-                    },
-                    "password_list": {
-                        "type": "string",
-                        "description": (
-                            "The full path to the password list file. If the user doesn't specify, "
-                            f"propose the default: '{DEFAULT_PASSWORD_LIST}' (basename: '{_default_password_list_basename}')."
-                        ),
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Optional: The specific path for the service if required by the module (e.g., '/protected' for http-get, '/login' for http-post-form). Omit if not applicable.",
-                    },
-                    "threads": {
-                        "type": "integer",
-                        "description": "Optional: Number of parallel threads for Hydra. Defaults to a system default (e.g., 4 or 16).",
-                    },
-                    "hydra_options": {
-                        "type": "string",
-                        "description": "Optional: A string of any other specific command-line options for Hydra, if needed beyond the basics.",
-                    },
-                },
-                "required": [
-                    "target",
-                    "port",
-                    "service_protocol",
-                    "username",
-                    "password_list",
-                ],
-            },
-        },
-    },
-]
+        }
+    )
+
+# Example of how the old hardcoded tools list looked (for reference, now replaced):
+# tools = [
+#     {  # ADDED HTTP PAGE FETCHER TOOL DEFINITION
+#         "type": "function",
+#         "function": {
+#             "name": "propose_fetch_web_content",
+#             "description": (
+#                 "Proposes to fetch and analyze the HTML/text content of a specific web page "
+#                 "(e.g., an index page or an interesting path found by Gobuster). "
+#                 "This is used to gather context for the LLM to analyze for clues like usernames, comments, or technologies."
+#             ),
+#             "parameters": {
+#                 "type": "object",
+#                 "properties": {
+#                     "url_to_fetch": {
+#                         "type": "string",
+#                         "description": "The full URL of the web page to fetch (e.g., 'http://target.com/index.html'). Must include http:// or https://.",
+#                     }
+#                 },
+#                 "required": ["url_to_fetch"],
+#             },
+#         },
+#     },
+# ... other old tool definitions ...
+# ]
 
 
 # --- LLM Interaction ---

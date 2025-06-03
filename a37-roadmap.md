@@ -189,3 +189,21 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 ---
 
 This section is your quick-start for understanding the project, its direction, and how to contribute or extend it successfully.
+
+## Roadmap Update: Focus on Assistant-Driven Workflow
+
+- The primary goal is to provide a conversational, AI-guided recon experience.
+- Users should interact with the assistant, which will:
+  - Run tools on request
+  - Explain results
+  - Suggest next steps
+  - Manage session context and history
+- Direct tool subcommands are optional for advanced/manual use and do not provide AI/assistant features.
+
+### Key Tasks
+- Improve assistant's ability to:
+  - Orchestrate tool runs based on user input
+  - Parse and explain tool results
+  - Suggest next steps and automate workflows
+  - Manage session state and history
+- Update documentation and CLI help to reflect this focus

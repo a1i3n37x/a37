@@ -26,6 +26,15 @@ app = typer.Typer(
     # rich_markup_mode=None,  # Keep this for stability
 )
 
+manual_app = typer.Typer(
+    help="Manual/advanced tool commands. These bypass the assistant and session features."
+)
+app.add_typer(
+    manual_app,
+    name="manual",
+    help="Advanced: Run tools directly (no assistant/session features)",
+)
+
 cli_console = Console()  # For messages directly from the CLI framework
 
 # Configure basic logging for the CLI module itself.
@@ -38,48 +47,15 @@ session_controller: Optional[SessionController] = None
 
 
 @app.callback()
-def main_callback(
-    ctx: typer.Context,
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        "-l",
-        help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
-        case_sensitive=False,
-    ),
-):
+def main(ctx: typer.Context):
     """
-    Alien Recon AI Assistant.
-    This callback can be used for context shared across all commands.
+    Alien Recon: Start without arguments to launch the assistant-driven recon session.
     """
-    numeric_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        cli_console.print(
-            f"[bold red]Invalid log level: {log_level}. Defaulting to INFO.[/bold red]"
-        )
-        numeric_level = logging.INFO
-        log_level = "INFO"  # for the logger message
+    if ctx.invoked_subcommand is None:
+        from alienrecon.core.session import SessionController
 
-    # Reconfigure root logger
-    # For DEBUG, use a more detailed format
-    if numeric_level == logging.DEBUG:
-        log_format = "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
-    else:
-        log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-
-    logging.basicConfig(
-        level=numeric_level,
-        format=log_format,
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,  # Force reconfiguration
-    )
-    # Log the effective log level being used by the application's root logger
-    logging.getLogger().info(f"Logging level set to {log_level.upper()}")
-
-    global session_controller
-    session_controller = SessionController()
-    ctx.obj = {"session_controller": session_controller}
-    module_logger.debug("Main CLI callback invoked, logging configured.")
+        sc = SessionController()
+        sc.run_assistant_session()
 
 
 @app.command()
@@ -367,6 +343,357 @@ def doctor():
         cli_console.print(
             "[bold cyan]👽 Doctor check complete. Happy hacking![/bold cyan]"
         )
+
+
+@manual_app.command()
+def nmap(
+    target: str = typer.Argument(
+        ..., help="Target IP address or hostname for Nmap scan."
+    ),
+    arguments: str = typer.Option(
+        "-sV -T4", help="Nmap arguments (e.g., '-sV -T4 -p 80,443')"
+    ),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Run Nmap directly. This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.nmap_tool:
+            cli_console.print(
+                "[bold red]Nmap tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        result = sc.nmap_tool.execute(target=target, arguments=arguments)
+        cli_console.print(f"[green]Nmap result:[/green] {result['scan_summary']}")
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            fname = f"results/nmap_{target.replace('.', '_')}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running Nmap: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@manual_app.command()
+def gobuster(
+    target: str = typer.Argument(
+        ..., help="Target IP address or hostname for Gobuster scan."
+    ),
+    port: int = typer.Option(80, help="Port to scan (e.g., 80, 443)"),
+    wordlist: str = typer.Option(
+        None, help="Path to wordlist (default: system default)"
+    ),
+    status_codes: str = typer.Option(
+        "200,201,204,301,302,307,401,403", help="Comma-separated status codes to show."
+    ),
+    threads: int = typer.Option(50, help="Number of threads (default: 50)"),
+    extensions: str = typer.Option(
+        None, help="File extensions to scan (e.g., .php,.txt)"
+    ),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Run a Gobuster scan directly. This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.gobuster_tool:
+            cli_console.print(
+                "[bold red]Gobuster tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        kwargs = {
+            "target_ip": target,
+            "port": port,
+            "wordlist": wordlist,
+            "status_codes": status_codes,
+            "threads": threads,
+        }
+        if extensions:
+            kwargs["extensions"] = extensions
+        if port in [443, 8443]:
+            kwargs["ignore_cert_errors"] = True
+        result = sc.gobuster_tool.execute(**kwargs)
+        cli_console.print(f"[green]Gobuster result:[/green] {result['scan_summary']}")
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            fname = f"results/gobuster_{target.replace('.', '_')}_{port}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running Gobuster: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@manual_app.command()
+def nikto(
+    target: str = typer.Argument(
+        ..., help="Target IP address or hostname for Nikto scan."
+    ),
+    port: int = typer.Option(80, help="Port to scan (e.g., 80, 443)"),
+    nikto_arguments: str = typer.Option(
+        "", help="Additional Nikto arguments (optional)"
+    ),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Run a Nikto scan directly. This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.nikto_tool:
+            cli_console.print(
+                "[bold red]Nikto tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        result = sc.nikto_tool.execute(
+            target=target, port=port, nikto_arguments=nikto_arguments
+        )
+        cli_console.print(f"[green]Nikto result:[/green] {result['scan_summary']}")
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            fname = f"results/nikto_{target.replace('.', '_')}_{port}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running Nikto: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@manual_app.command()
+def hydra(
+    target: str = typer.Argument(
+        ..., help="Target IP address or hostname for Hydra scan."
+    ),
+    port: int = typer.Option(22, help="Port to scan (e.g., 22, 21, 80)"),
+    service_protocol: str = typer.Option(
+        ..., help="Hydra service module (e.g., 'ssh', 'ftp', 'http-get')"
+    ),
+    username: str = typer.Option(..., help="Username to brute-force."),
+    password_list: str = typer.Option(
+        None, help="Path to password list (default: system default)"
+    ),
+    path: str = typer.Option(None, help="Path for HTTP services (e.g., /login)"),
+    threads: int = typer.Option(4, help="Number of threads (default: 4)"),
+    hydra_options: str = typer.Option("", help="Additional Hydra options (optional)"),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Run a Hydra brute-force scan directly. This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.hydra_tool:
+            cli_console.print(
+                "[bold red]Hydra tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        kwargs = {
+            "target": target,
+            "port": port,
+            "service_protocol": service_protocol,
+            "username": username,
+            "password_list": password_list,
+            "path": path,
+            "threads": threads,
+            "hydra_options": hydra_options,
+        }
+        result = sc.hydra_tool.execute(
+            **{k: v for k, v in kwargs.items() if v is not None}
+        )
+        cli_console.print(f"[green]Hydra result:[/green] {result['scan_summary']}")
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            fname = f"results/hydra_{target.replace('.', '_')}_{port}_{service_protocol}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running Hydra: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@manual_app.command()
+def smb(
+    target: str = typer.Argument(
+        ..., help="Target IP address or hostname for SMB/enum4linux-ng scan."
+    ),
+    enum_arguments: str = typer.Option(
+        "-A", help="Arguments for enum4linux-ng (default: -A)"
+    ),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Run an SMB/enum4linux-ng scan directly. This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.smb_tool:
+            cli_console.print(
+                "[bold red]SMB/enum4linux-ng tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        result = sc.smb_tool.execute(target=target, enum_arguments=enum_arguments)
+        cli_console.print(
+            f"[green]SMB/enum4linux-ng result:[/green] {result['scan_summary']}"
+        )
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            fname = f"results/smb_{target.replace('.', '_')}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running SMB/enum4linux-ng: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@manual_app.command()
+def http_fetch(
+    url: str = typer.Argument(
+        ..., help="Full URL to fetch (e.g., http://target.com/index.html)"
+    ),
+    timeout: int = typer.Option(15, help="Request timeout in seconds (default: 15)"),
+    save: bool = typer.Option(False, help="Save results to results directory."),
+):
+    """
+    [Advanced] Fetch and analyze the HTML/text content of a web page directly.
+    This bypasses the assistant and session features.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+
+        sc = SessionController()
+        if not sc.http_fetcher_tool:
+            cli_console.print(
+                "[bold red]HTTP fetcher tool is not available (not installed or misconfigured).[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        result = sc.http_fetcher_tool.execute(url_to_fetch=url, timeout=timeout)
+        cli_console.print(f"[green]HTTP Fetch result:[/green] {result['scan_summary']}")
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            cli_console.print("[bold yellow]Findings:[/bold yellow]")
+            cli_console.print(pformat(findings))
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                cli_console.print("[dim]Raw stdout:[/dim]")
+                cli_console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                cli_console.print("[dim]Raw stderr:[/dim]")
+                cli_console.print(result["raw_stderr"])
+        if save:
+            import json
+            import os
+
+            os.makedirs("results", exist_ok=True)
+            import re as _re
+
+            fname = f"results/httpfetch_{_re.sub(r'[^a-zA-Z0-9]', '_', url)}.json"
+            with open(fname, "w") as f:
+                json.dump(result, f, indent=2)
+            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
+    except Exception as e:
+        cli_console.print(f"[bold red]Error running HTTP fetch: {e}[/bold red]")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

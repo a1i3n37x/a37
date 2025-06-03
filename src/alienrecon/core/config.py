@@ -76,6 +76,7 @@ KNOWN_TOOL_FALLBACK_PATHS = {
     "nikto": "/usr/bin/nikto",  # Or sometimes /opt/nikto/program/nikto.pl (would need wrapper for .pl)
     "enum4linux-ng": "/usr/bin/enum4linux-ng",  # Or enum4linux-ng.py if that's the executable
     "hydra": "/usr/bin/hydra",
+    "ffuf": "/usr/bin/ffuf",  # Added ffuf
 }
 
 TOOL_PATHS = {}

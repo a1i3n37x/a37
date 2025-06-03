@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import socket
 from datetime import datetime
 from typing import Any, Optional
 
@@ -20,6 +21,9 @@ from rich.spinner import Spinner
 from ..tools.gobuster import GobusterTool
 from ..tools.http_fetcher import HttpPageFetcherTool  # ADDED
 from ..tools.hydra import HydraTool
+
+# Import the LLM_TOOL_FUNCTIONS registry
+from ..tools.llm_functions import LLM_TOOL_FUNCTIONS
 from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
 from ..tools.smb import SmbTool
@@ -57,6 +61,15 @@ class SessionController:
         self.chat_history: list[dict[str, Any]] = []
         self.pending_tool_call: Optional[ChatCompletionMessageToolCall] = None
         self.is_novice_mode: bool = True
+
+        # Session state specifically for target context
+        self.state = {
+            "target_ip": None,
+            "target_hostname": None,
+            "open_ports": [],  # List of {"port": int, "service": str, "version": str}
+            "discovered_subdomains": [],
+            "web_findings": {},  # E.g. {"http://target:port/path": {"tech": [], "interesting_files": []}}
+        }
 
         self.nmap_tool: Optional[NmapTool] = None
         self.gobuster_tool: Optional[GobusterTool] = None
@@ -181,6 +194,7 @@ class SessionController:
             "current_target": self.current_target,
             "chat_history": self.chat_history,
             "is_novice_mode": self.is_novice_mode,
+            "state": self.state,  # Save session state
         }
         try:
             with open(self.SESSION_FILE, "w", encoding="utf-8") as f:
@@ -198,6 +212,7 @@ class SessionController:
                 self.current_target = session_data.get("current_target")
                 self.chat_history = session_data.get("chat_history", [])
                 self.is_novice_mode = session_data.get("is_novice_mode", True)
+                self.state = session_data.get("state", self.state)  # Load session state
                 logger.info(f"Session loaded from {self.SESSION_FILE}")
             except Exception as e:
                 logger.error(f"Failed to load session: {e}", exc_info=True)
@@ -206,23 +221,63 @@ class SessionController:
 
     def set_target(self, target_address: str):
         is_valid_target = False
+        ip_address: Optional[str] = None
+        hostname: Optional[str] = None
+
         if target_address:
-            if (
-                re.match(
-                    r"^\d{1,3}(\.\d{1,3}){3}(?:/\d{1,2})?$", target_address.strip()
-                )
-                or "." in target_address.strip()
-            ):
+            stripped_target = target_address.strip()
+            # Check if it's an IP
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", stripped_target):
                 is_valid_target = True
+                ip_address = stripped_target
+                try:
+                    # Attempt reverse DNS lookup for hostname
+                    hostname, _, _ = socket.gethostbyaddr(ip_address)
+                except socket.herror:
+                    hostname = None  # No resolvable hostname
+            # Check if it's a CIDR (treat as IP for now, could refine later)
+            elif re.match(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$", stripped_target):
+                is_valid_target = True
+                ip_address = stripped_target  # Store CIDR as IP for now
+                hostname = stripped_target  # And as hostname
+            # Else, assume it's a hostname
+            elif "." in stripped_target:  # Basic check for hostname
+                is_valid_target = True
+                hostname = stripped_target
+                try:
+                    ip_address = socket.gethostbyname(hostname)
+                except socket.gaierror:
+                    self.console.print(
+                        f"[bold red]Error: Could not resolve hostname '{hostname}' to an IP address.[/bold red]"
+                    )
+                    logger.warning(f"Could not resolve hostname: {hostname}")
+                    is_valid_target = False
+            else:
+                self.console.print(
+                    f"[bold red]Invalid target format: '{target_address}'. Use IP or domain.[/bold red]"
+                )
+                logger.warning(f"Invalid target format: {target_address}")
+                return
 
         if is_valid_target:
-            clean_target = target_address.strip()
-            if self.current_target != clean_target:
-                self.current_target = clean_target
+            # Use the IP address as the primary current_target if available
+            primary_target_display = ip_address or hostname
+            if self.current_target != primary_target_display:
+                self.current_target = primary_target_display
+                self.state["target_ip"] = ip_address
+                self.state["target_hostname"] = hostname
+                # Reset other state parts as target has changed
+                self.state["open_ports"] = []
+                self.state["discovered_subdomains"] = []
+                self.state["web_findings"] = {}
+
                 self.console.print(
-                    f"[bold blue]Session Target Locked:[/bold blue] {self.current_target}"
+                    f"[bold blue]Session Target Locked:[/bold blue] {self.current_target} "
+                    f"(IP: {ip_address or 'N/A'}, Hostname: {hostname or 'N/A'})"
                 )
-                logger.info(f"Target set to: {self.current_target}")
+                logger.info(
+                    f"Target set to: {self.current_target} (IP: {ip_address}, Hostname: {hostname})"
+                )
                 self.chat_history = []
                 self.pending_tool_call = None
                 logger.debug("Chat history cleared due to new target.")
@@ -239,6 +294,14 @@ class SessionController:
 
     def get_current_target(self) -> Optional[str]:
         return self.current_target
+
+    def get_target_ip(self) -> Optional[str]:
+        """Returns the resolved IP address of the current target."""
+        return self.state.get("target_ip")
+
+    def get_target_hostname(self) -> Optional[str]:
+        """Returns the hostname of the current target, if available."""
+        return self.state.get("target_hostname")
 
     def set_novice_mode(self, novice: bool):
         if self.is_novice_mode != novice:
@@ -311,28 +374,95 @@ class SessionController:
 
         if not self.chat_history:
             # Construct initial message that includes target information for the AI's first turn.
+            # Guide the AI to use the new nmap_scan function for its first proposal.
             initial_user_msg = (
                 f"Initiate reconnaissance for primary target coordinates: {self.current_target}. "
-                "Start with a fast Nmap scan using -Pn to check the top 1000 TCP ports (Nmap default), since CTF targets often block ping/ICMP and most services are on common ports. Only suggest service/version detection or web/content enumeration after open ports are found. Please propose the first Nmap scan as a tool call, not just a question."
+                "For the first step, please propose an initial Nmap scan using the `nmap_scan` tool. "
+                "A good initial scan for CTFs would be a SYN scan on the top 1000 TCP ports, "
+                "explicitly using -Pn as ping is often blocked. So, consider parameters like: "
+                '`ip` should be the target IP, `scan_type="SYN"`, `top_ports=1000`, and `custom_arguments="-Pn"`. '
+                "Only suggest service/version detection or other scans after these initial open ports are found. "
+                "Remember to propose this as a tool call."
             )
             self.chat_history.append({"role": "user", "content": initial_user_msg})
             ai_response = self._get_llm_response_from_agent()
             self._process_llm_message(ai_response)
 
+        # NEW: On session start, if last message is assistant with tool_calls, resolve them
+        if self.chat_history:
+            last_msg = self.chat_history[-1]
+            if last_msg.get("role") == "assistant" and last_msg.get("tool_calls"):
+                # Check if there are any tool calls that haven't been resolved yet
+                unresolved_tool_calls = []
+                if last_msg.get("tool_calls"):
+                    for tool_call in last_msg["tool_calls"]:
+                        tool_call_id = tool_call["id"]
+                        # Check if this tool call has already been resolved
+                        has_response = any(
+                            msg.get("role") == "tool"
+                            and msg.get("tool_call_id") == tool_call_id
+                            for msg in self.chat_history
+                        )
+                        if not has_response:
+                            unresolved_tool_calls.append(tool_call)
+
+                # Only process if there are unresolved tool calls
+                if unresolved_tool_calls:
+                    # Reconstruct a ChatCompletionMessage-like object for processing
+                    from openai.types.chat.chat_completion_message import (
+                        ChatCompletionMessage,
+                        ChatCompletionMessageToolCall,
+                    )
+
+                    tool_calls = [
+                        ChatCompletionMessageToolCall(**tc)
+                        for tc in unresolved_tool_calls
+                    ]
+                    ai_message = ChatCompletionMessage(
+                        role="assistant",
+                        content=last_msg.get("content"),
+                        tool_calls=tool_calls,
+                        function_call=None,
+                        tool_call_id=None,
+                        name=None,
+                    )
+                    self._process_llm_message(ai_message)
+            else:
+                # If the last message isn't an assistant with unresolved tool calls,
+                # and we have a conversation history, prompt the AI to continue
+                if self.chat_history and self.chat_history[-1].get("role") in [
+                    "assistant",
+                    "tool",
+                ]:
+                    # Ask the AI what to do next
+                    continuation_msg = (
+                        "What should we investigate next based on our current findings? "
+                        "Please suggest the next reconnaissance step or tool to use."
+                    )
+                    self.chat_history.append(
+                        {"role": "user", "content": continuation_msg}
+                    )
+                    ai_response = self._get_llm_response_from_agent()
+                    self._process_llm_message(ai_response)
+
         while True:
             try:
-                if self.pending_tool_call:
+                # NEW: Block user input if there are unresolved tool calls
+                while self.pending_tool_call:
                     if self._confirm_tool_proposal():
-                        self._execute_and_process_tool_call()
+                        self._execute_single_tool_call_and_update_history()
                     else:
-                        self._send_tool_cancellation_to_llm(
-                            self.pending_tool_call.id,
-                            self.pending_tool_call.function.name,
-                        )
-                        self.pending_tool_call = None
-                        ai_response = self._get_llm_response_from_agent()
-                        self._process_llm_message(ai_response)
-                    continue
+                        if self.pending_tool_call is not None:
+                            tool_call_id = self.pending_tool_call.id
+                            function_name = self.pending_tool_call.function.name
+                            self._send_tool_cancellation_to_llm(
+                                tool_call_id, function_name
+                            )
+                            self.pending_tool_call = None
+                            ai_response = self._get_llm_response_from_agent()
+                            self._process_llm_message(ai_response)
+                        else:
+                            break
 
                 user_input = self.console.input(
                     "[bold cyan]You (to Alien Recon):[/bold cyan] "
@@ -411,41 +541,70 @@ class SessionController:
             )
             return
 
-        self.pending_tool_call = None
-        message_for_history: dict[str, Any] = {"role": "assistant"}
+        # Ensure the AI's textual response is displayed if present
         if ai_message.content:
-            message_for_history["content"] = ai_message.content
-        else:
-            message_for_history["content"] = None
-
-        if ai_message.tool_calls:
-            self.pending_tool_call = ai_message.tool_calls[0]
-            logger.debug(
-                f"LLM proposed tool call ID: {self.pending_tool_call.id}, "
-                f"Func: {self.pending_tool_call.function.name}, "
-                f"Args: {self.pending_tool_call.function.arguments}"
-            )
-            message_for_history["tool_calls"] = [
-                tc.model_dump() for tc in ai_message.tool_calls
-            ]
-
-        if message_for_history["content"] or message_for_history.get("tool_calls"):
-            if message_for_history["content"]:
-                self.console.print(
-                    Markdown(f"**Alien Recon:** {message_for_history['content']}")
-                )
-            self.chat_history.append(message_for_history)
-        else:
+            self.console.print(Markdown(f"**Alien Recon:** {ai_message.content}"))
+        elif not ai_message.tool_calls:
+            # Only log/print warning if there are no tool calls AND no content
             logger.warning("LLM message had no text content and no tool_calls.")
             self.console.print(
                 "[grey50](Alien Recon offered no textual guidance and proposed no actions this turn.)[/grey50]"
             )
 
+        # The primary addition of the AI's message to history happens here:
+        # Check if we're adding a duplicate - avoid adding the same message twice
+        message_dump = ai_message.model_dump()
+
+        # Check if the last message in history is identical to what we're about to add
+        if (
+            self.chat_history
+            and self.chat_history[-1].get("role") == "assistant"
+            and self.chat_history[-1].get("tool_calls")
+            == message_dump.get("tool_calls")
+        ):
+            # This appears to be a duplicate message, don't add it again
+            logger.debug("Skipping duplicate assistant message addition to history")
+        else:
+            self.chat_history.append(message_dump)
+            self.save_session()
+
+        if ai_message.tool_calls:
+            tool_calls_to_process = list(ai_message.tool_calls)
+            for tool_call in tool_calls_to_process:
+                self.pending_tool_call = tool_call  # Set current tool_call for _confirm_tool_proposal and execution
+
+                if self._confirm_tool_proposal():  # This shows [E]dit [C]onfirm prompt
+                    if (
+                        not self._execute_single_tool_call_and_update_history()
+                    ):  # Returns True on success, False on tool exec error
+                        # Error message already added to history by the new function
+                        # Still must append a tool message for every tool call
+                        continue  # Continue to process all tool calls
+                else:
+                    # User cancelled the tool proposal
+                    self._send_tool_cancellation_to_llm(
+                        tool_call.id, tool_call.function.name
+                    )
+                    # Still must append a tool message for every tool call
+                    continue  # Continue to process all tool calls
+
+            self.pending_tool_call = None  # Clear pending call after the loop
+
+            # Only after all tool messages are appended, get next LLM response
+            next_ai_response_message = self._get_llm_response_from_agent()
+            self._process_llm_message(
+                next_ai_response_message
+            )  # Recursive call for next turn
+            return  # Important: return after handling tool calls and dispatching next LLM turn
+
+        # If we reach here, the AI message had no tool calls but had content - this is normal
+        # The text content has already been displayed above, so we just return
+        return
+
     def _confirm_tool_proposal(self) -> bool:
         if not self.pending_tool_call:
             logger.error("Confirmation requested but no tool_call is pending.")
             return False
-
         tool_name_llm = self.pending_tool_call.function.name
         try:
             tool_args = json.loads(self.pending_tool_call.function.arguments)
@@ -456,170 +615,164 @@ class SessionController:
             self.console.print(
                 f"[bold red]Error: AI proposed action '{tool_name_llm}' with invalid arguments. Aborting this action.[/bold red]"
             )
-            self._send_tool_error_to_llm(
-                self.pending_tool_call.id,
-                tool_name_llm,
-                f"Failed to parse arguments: {e}. Arguments received: {self.pending_tool_call.function.arguments}",
-            )
-            self.pending_tool_call = None
+            if self.pending_tool_call is not None:
+                tool_call_id = self.pending_tool_call.id
+                # function_name = self.pending_tool_call.function.name # Already have tool_name_llm
+                self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                self.pending_tool_call = None
             return False
 
-        tool_display_map = {
-            "propose_nmap_scan": "Nmap Scan",
-            "propose_gobuster_scan": "Gobuster Scan",
-            "propose_nikto_scan": "Nikto Scan",
-            "propose_smb_enum": "SMB Enum",
-            "propose_hydra_bruteforce": "Hydra Brute-force",
-            "propose_fetch_web_content": "Fetch Web Content",  # ADDED
-        }
-        display_name = tool_display_map.get(
-            tool_name_llm,
-            tool_name_llm.replace("propose_", "").replace("_", " ").title(),
-        )
+        # Get function details from the registry
+        function_definition = LLM_TOOL_FUNCTIONS.get(tool_name_llm)
+        if not function_definition:
+            logger.error(
+                f"Tool function '{tool_name_llm}' not found in LLM_TOOL_FUNCTIONS registry."
+            )
+            self.console.print(
+                f"[bold red]Error: Unknown tool function '{tool_name_llm}' proposed by AI. Aborting.[/bold red]"
+            )
+            if self.pending_tool_call is not None:
+                tool_call_id = self.pending_tool_call.id
+                self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                self.pending_tool_call = None
+            return False
 
-        def show_args(args):
+        display_name = function_definition.get("description", tool_name_llm)
+
+        def show_args(current_tool_args, function_params_definition):
             self.console.rule(
                 f"[bold yellow]Decision Point: {display_name} Proposal[/bold yellow]"
             )
-            if tool_name_llm == "propose_fetch_web_content":
+            # Display a brief description of the function
+            # self.console.print(f"[dim]{function_definition.get('description', '')}[/dim]")
+
+            for param_name, param_info in function_params_definition.items():
+                description = param_info.get("description", "")
+                current_value = current_tool_args.get(param_name)
+                default_value = param_info.get("default")
+
+                display_value = current_value
+                value_source = "(current)"
+                if current_value is None and default_value is not None:
+                    display_value = default_value
+                    value_source = "(default)"
+                elif current_value is None:
+                    display_value = "[NOT SET]"
+                    value_source = ""
+
                 self.console.print(
-                    f"URL to Fetch: {args.get('url_to_fetch', 'N/A')}", markup=False
+                    f"  [bold]{param_name}[/bold] ({description}): [cyan]{display_value}[/cyan] {value_source}",
+                    markup=True,
                 )
-            else:
-                display_target = args.get("target", self.current_target)
-                self.console.print(f"Target: {display_target}", markup=False)
-                if tool_name_llm == "propose_nmap_scan":
-                    self.console.print(
-                        f"Nmap Args: {args.get('arguments', 'N/A')}", markup=False
-                    )
-                elif tool_name_llm == "propose_gobuster_scan":
-                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
-                    wl = args.get("wordlist") or DEFAULT_WORDLIST
-                    self.console.print(
-                        f"Wordlist: {wl if wl else 'Default/Not Set'}", markup=False
-                    )
-                    sc = args.get("status_codes")
-                    if sc:
-                        self.console.print(f"Status Codes: {sc}", markup=False)
-                elif tool_name_llm == "propose_nikto_scan":
-                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
-                    na = args.get("nikto_arguments")
-                    if na:
-                        self.console.print(f"Nikto Args: {na}", markup=False)
-                elif tool_name_llm == "propose_smb_enum":
-                    ea = args.get("enum_arguments")
-                    if ea:
-                        self.console.print(f"Enum4Linux Args: {ea}", markup=False)
-                elif tool_name_llm == "propose_hydra_bruteforce":
-                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
-                    self.console.print(
-                        f"Service: {args.get('service_protocol', 'N/A')}", markup=False
-                    )
-                    self.console.print(
-                        f"Username: {args.get('username', 'N/A')}", markup=False
-                    )
-                    pwl = args.get("password_list") or DEFAULT_PASSWORD_LIST
-                    self.console.print(
-                        f"Password List: {pwl if pwl else 'Default/Not Set'}",
-                        markup=False,
-                    )
-                    if args.get("path"):
-                        self.console.print(f"Path: {args.get('path')}", markup=False)
-                    if args.get("threads"):
-                        self.console.print(
-                            f"Threads: {args.get('threads')}", markup=False
-                        )
-                    if args.get("hydra_options"):
-                        self.console.print(
-                            f"Other Hydra Opts: {args.get('hydra_options')}",
-                            markup=False,
-                        )
             self.console.rule()
 
-        # Define full argument sets and defaults for each tool
-        tool_arg_defaults = {}
-        if tool_name_llm == "propose_nmap_scan":
-            tool_arg_defaults = {
-                "target": self.current_target or "",
-                "arguments": "-sV -T4",
-            }
-        elif tool_name_llm == "propose_gobuster_scan":
-            tool_arg_defaults = {
-                "target": self.current_target or "",
-                "port": 80,
-                "wordlist": DEFAULT_WORDLIST
-                or "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt",
-                "status_codes": "200,201,204,301,302,307,401,403",
-            }
-        elif tool_name_llm == "propose_nikto_scan":
-            tool_arg_defaults = {
-                "target": self.current_target or "",
-                "port": 80,
-                "nikto_arguments": "",
-            }
-        elif tool_name_llm == "propose_smb_enum":
-            tool_arg_defaults = {
-                "target": self.current_target or "",
-                "enum_arguments": "-A",
-            }
-        elif tool_name_llm == "propose_hydra_bruteforce":
-            tool_arg_defaults = {
-                "target": self.current_target or "",
-                "port": 22,
-                "service_protocol": "ssh",
-                "username": "",
-                "password_list": DEFAULT_PASSWORD_LIST or "",
-                "path": "",
-                "threads": 4,
-                "hydra_options": "",
-            }
-        elif tool_name_llm == "propose_fetch_web_content":
-            tool_arg_defaults = {
-                "url_to_fetch": "http://" + (self.current_target or "") + "/",
-            }
-        # Merge tool call args with defaults (tool call args take precedence)
-        current_args = {**tool_arg_defaults, **tool_args}
+        # Prepare current arguments by merging defaults with LLM-provided args
+        llm_provided_args = tool_args  # tool_args is already a dict from json.loads()
 
-        # Interactive loop for edit/confirm/skip/quit
+        function_params_definition = function_definition.get("parameters", {})
+        current_display_args = {}
+        for param_name, param_info in function_params_definition.items():
+            current_display_args[param_name] = llm_provided_args.get(
+                param_name, param_info.get("default")
+            )
+
         while True:
-            show_args(current_args)
-            # Use markup for the action prompt so [bold] tags render, but keep markup=False for user-editable values
+            show_args(current_display_args, function_params_definition)
             self.console.print(
                 "[bold][E][/bold]dit  [bold][C][/bold]onfirm  [bold][S][/bold]kip  [bold][Q][/bold]uit session"
             )
             choice = self.console.input("  Your choice: ").strip().lower()
             if choice in ["c", "confirm"]:
+                # Update pending_tool_call with potentially edited args before returning True
+                self.pending_tool_call.function.arguments = json.dumps(
+                    current_display_args
+                )
                 return True
             elif choice in ["s", "skip"]:
-                logger.info(f"User skipped tool: {display_name} (Args: {current_args})")
-                self._send_tool_cancellation_to_llm(
-                    self.pending_tool_call.id, tool_name_llm
+                logger.info(
+                    f"User skipped tool: {display_name} (Args: {current_display_args})"
                 )
-                self.pending_tool_call = None
+                if self.pending_tool_call is not None:
+                    tool_call_id = self.pending_tool_call.id
+                    # function_name = self.pending_tool_call.function.name # Already have tool_name_llm
+                    self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                    self.pending_tool_call = None
                 return False
             elif choice in ["q", "quit"]:
                 self.console.print(
                     "[bold magenta]Ending reconnaissance with Alien Recon.[/bold magenta]",
                     markup=False,
                 )
-                exit(0)
+                exit(0)  # Consider a cleaner exit strategy if needed
             elif choice in ["e", "edit"]:
-                # Prompt for each argument
-                for k, v in current_args.items():
-                    prompt = f"  Edit '{k}' [{v}]: "
-                    new_val = self.console.input(prompt, markup=False)
-                    if new_val.strip() != "":
-                        # Try to cast to int if original was int
-                        if isinstance(v, int):
+                for (
+                    param_name_to_edit,
+                    param_info_to_edit,
+                ) in function_params_definition.items():
+                    prompt_val = current_display_args.get(param_name_to_edit)
+                    if (
+                        prompt_val is None
+                        and param_info_to_edit.get("default") is not None
+                    ):
+                        prompt_val = param_info_to_edit.get("default")
+                    elif prompt_val is None:
+                        prompt_val = ""
+
+                    prompt = f"  Edit '{param_name_to_edit}' (current: [yellow]{prompt_val}[/yellow]): "
+                    new_val_str = self.console.input(prompt, markup=True)
+
+                    if new_val_str.strip() != "":
+                        param_type = param_info_to_edit.get("type", "string")
+                        # Attempt type conversion for boolean, integer, number
+                        if param_type == "integer":
                             try:
-                                current_args[k] = int(new_val)
+                                current_display_args[param_name_to_edit] = int(
+                                    new_val_str
+                                )
+                            except ValueError:
+                                self.console.print(
+                                    f"[red]Invalid integer value for {param_name_to_edit}. Keeping previous.[/red]"
+                                )
+                        elif param_type == "number":  # float
+                            try:
+                                current_display_args[param_name_to_edit] = float(
+                                    new_val_str
+                                )
+                            except ValueError:
+                                self.console.print(
+                                    f"[red]Invalid number value for {param_name_to_edit}. Keeping previous.[/red]"
+                                )
+                        elif param_type == "boolean":
+                            if new_val_str.lower() in ["true", "t", "yes", "y", "1"]:
+                                current_display_args[param_name_to_edit] = True
+                            elif new_val_str.lower() in ["false", "f", "no", "n", "0"]:
+                                current_display_args[param_name_to_edit] = False
+                            else:
+                                self.console.print(
+                                    f"[red]Invalid boolean value for {param_name_to_edit} (true/false). Keeping previous.[/red]"
+                                )
+                        elif (
+                            param_type == "array"
+                        ):  # For array, expect comma-separated string
+                            try:
+                                # Simple split, assuming elements don't contain commas.
+                                # For more complex array inputs, more robust parsing might be needed.
+                                current_display_args[param_name_to_edit] = [
+                                    s.strip()
+                                    for s in new_val_str.split(",")
+                                    if s.strip()
+                                ]
                             except Exception:
-                                current_args[k] = new_val
-                        else:
-                            current_args[k] = new_val
+                                self.console.print(
+                                    f"[red]Could not parse array for {param_name_to_edit}. Keeping previous.[/red]"
+                                )
+                        else:  # string or other types
+                            current_display_args[param_name_to_edit] = new_val_str
+                    # If user enters empty string, it means keep the current/default value, so no change to current_display_args[param_name_to_edit]
+
                 self.console.print("[green]Arguments updated.[/green]", markup=False)
-                # Update the pending_tool_call's arguments for execution
-                self.pending_tool_call.function.arguments = json.dumps(current_args)
+                # No need to update pending_tool_call here, as the loop will show_args again
+                # and confirmation will dump current_display_args.
                 continue
             else:
                 self.console.print(
@@ -629,228 +782,188 @@ class SessionController:
                 continue
 
     def _send_tool_cancellation_to_llm(self, tool_call_id: str, function_name: str):
-        if not tool_call_id or not function_name:
-            logger.error(
-                f"Cannot send tool cancellation: Missing tool_call_id ({tool_call_id}) or function_name ({function_name})."
-            )
-            return
+        """Handles user cancellation of a tool, adds a 'tool' role message to history."""
+        self.console.print(
+            f"[yellow]Tool call '{function_name}' cancelled by user.[/yellow]"
+        )
+
         cancellation_content = json.dumps(
             {
-                "status": "Cancelled by user",
-                "message": "The Earthling specimen has declined the proposed action. Please suggest an alternative or ask for clarification based on previous findings.",
+                "status": "cancelled_by_user",
+                "message": f"User explicitly cancelled the tool: {function_name}",
             }
         )
-        tool_response_msg = {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": function_name,
-            "content": cancellation_content,
-        }
-        self.chat_history.append(tool_response_msg)
-        logger.debug(
-            f"Appended user cancellation for {function_name} (ID: {tool_call_id}) to history."
-        )
 
-    def _send_tool_error_to_llm(
-        self, tool_call_id: str, function_name: str, error_message: str
-    ):
-        if not tool_call_id or not function_name:
-            logger.error(
-                "Cannot send tool error: Missing tool_call_id or function_name."
-            )
-            return
-        error_content = json.dumps(
+        self.chat_history.append(
             {
-                "status": "Error before execution",
-                "error": error_message,
-                "message": "There was an error processing the arguments for this tool or preparing it for execution. Please review the error and propose a corrected tool call or an alternative action.",
+                "tool_call_id": tool_call_id,
+                "role": "tool",  # Crucially, this must be 'tool'
+                "name": function_name,
+                "content": cancellation_content,
             }
         )
-        tool_response_msg = {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": function_name,
-            "content": error_content,
-        }
-        self.chat_history.append(tool_response_msg)
-        logger.debug(
-            f"Appended client-side tool error for {function_name} (ID: {tool_call_id}) to history: {error_message}"
-        )
+        self.save_session()
+        # No longer calls LLM here; caller (_process_llm_message) will do it.
 
-    def _execute_and_process_tool_call(self):
+    def _execute_single_tool_call_and_update_history(self) -> bool:
+        """
+        Executes the self.pending_tool_call, displays results,
+        and adds the 'tool' message (success or error) to history.
+        Returns True if tool executed (even if tool reported an operational error),
+        False if a critical error occurred during argument parsing or dispatch.
+        """
         if not self.pending_tool_call:
-            logger.error("Execute called but no tool_call pending/confirmed.")
-            return
+            logger.error(
+                "CRITICAL: _execute_single_tool_call_and_update_history called with no pending_tool_call."
+            )
+            self.console.print(
+                "[bold red]Error: No tool call pending for execution.[/bold red]"
+            )
+            return False
 
-        tool_to_execute = self.pending_tool_call
-        self.pending_tool_call = None
+        tool_call_id = self.pending_tool_call.id
+        function_name = self.pending_tool_call.function.name
+        arguments_str = self.pending_tool_call.function.arguments or "{}"
 
-        tool_name_llm = tool_to_execute.function.name
-        tool_id = tool_to_execute.id
-        tool_args_str = tool_to_execute.function.arguments
-        tool_result_content_dict: dict[str, Any] = {"findings": {}}
+        self.console.print(f"[cyan]Engaging tool {function_name}...[/cyan]")
+        spinner = Spinner("dots", text=f" Alien Recon is running {function_name}...")
+
+        tool_output_json_str: Optional[str] = None
+        tool_function_succeeded = False  # Tracks if the Python function for the tool ran without Python exceptions
 
         try:
-            tool_args_from_llm = json.loads(tool_args_str)
+            arguments = json.loads(arguments_str)
+
+            # Find and call the actual tool function
+            tool_info = LLM_TOOL_FUNCTIONS.get(function_name)
+            if not tool_info or not callable(tool_info.get("function")):
+                logger.error(
+                    f"Tool function '{function_name}' not found or not callable in LLM_TOOL_FUNCTIONS."
+                )
+                tool_output_dict = {
+                    "status": "failure",
+                    "error": f"Internal error: Tool '{function_name}' is not implemented correctly.",
+                }
+            else:
+                actual_tool_function = tool_info["function"]
+                logger.info(f"Executing tool: {function_name} with args: {arguments}")
+
+                with self.console.status(spinner, speed=1.5):
+                    tool_output_dict = actual_tool_function(
+                        **arguments
+                    )  # Execute the function
+
+                # tool_output_dict should already be a dict from the llm_functions
+                if not isinstance(tool_output_dict, dict):
+                    logger.error(
+                        f"Tool {function_name} did not return a dict. Got: {type(tool_output_dict)}"
+                    )
+                    tool_output_dict = {
+                        "status": "failure",
+                        "error": f"Tool {function_name} returned an unexpected data type.",
+                    }
+            tool_function_succeeded = True  # Python function call itself was successful
+
         except json.JSONDecodeError as e:
             logger.error(
-                f"JSONDecodeError during execute for {tool_name_llm} args: {tool_args_str}. Error: {e}"
+                f"JSONDecodeError parsing arguments for {function_name}: {e}. Args: {arguments_str}"
             )
-            tool_result_content_dict["error"] = (
-                f"Internal Error: Invalid arguments from LLM: {e}"
-            )
-            tool_result_content_dict["scan_summary"] = (
-                "Tool argument processing error before execution."
-            )
-            self._send_tool_error_to_llm(
-                tool_id, tool_name_llm, str(tool_result_content_dict["error"])
-            )
-            ai_follow_up_response = self._get_llm_response_from_agent()
-            self._process_llm_message(ai_follow_up_response)
-            return
-
-        # For CommandTools, 'target' is primary. For HttpPageFetcher, 'url_to_fetch' is primary.
-        # This logic handles the primary identifier for the operation.
-        primary_identifier_for_log = ""
-        if tool_name_llm == "propose_fetch_web_content":
-            primary_identifier_for_log = tool_args_from_llm.get(
-                "url_to_fetch", "N/A URL"
-            )
-        else:
-            primary_identifier_for_log = tool_args_from_llm.get(
-                "target", self.current_target or "N/A Target"
-            )
-
-        tool_display_name = (
-            tool_name_llm.replace("propose_", "").replace("_", " ").title()
-        )
-
-        # Specific argument validation for HttpPageFetcherTool
-        if tool_name_llm == "propose_fetch_web_content":
-            url_to_fetch = tool_args_from_llm.get("url_to_fetch")
-            if not url_to_fetch or not (
-                url_to_fetch.startswith("http://")
-                or url_to_fetch.startswith("https://")
-            ):
-                err_msg = f"Invalid or missing 'url_to_fetch' for {tool_name_llm}. Must be a full URL. Received: '{url_to_fetch}'"
-                logger.error(err_msg)
-                tool_result_content_dict = {
-                    "error": err_msg,
-                    "scan_summary": "HTTP Fetcher argument error.",
-                }
-                # Send error to LLM and get next response
-                self._send_tool_error_to_llm(tool_id, tool_name_llm, err_msg)
-                ai_follow_up_response = self._get_llm_response_from_agent()
-                self._process_llm_message(ai_follow_up_response)
-                return
-        # General target validation for other tools
-        elif (
-            not tool_args_from_llm.get("target") and not self.current_target
-        ):  # For CommandTools
-            err_msg = f"No target available (from LLM args or session) for tool {tool_name_llm}."
-            logger.error(err_msg)
-            tool_result_content_dict = {
-                "error": err_msg,
-                "scan_summary": "Target missing for tool execution.",
+            tool_output_dict = {
+                "status": "failure",
+                "error": f"Invalid arguments provided for {function_name}: {e}",
             }
-            self._send_tool_error_to_llm(tool_id, tool_name_llm, err_msg)
-            ai_follow_up_response = self._get_llm_response_from_agent()
-            self._process_llm_message(ai_follow_up_response)
-            return
-
-        # Prepare arguments for actual tool execution
-        final_tool_args_for_execution = tool_args_from_llm.copy()
-        if tool_name_llm != "propose_fetch_web_content":  # CommandTools expect 'target'
-            # Ensure 'target' is the resolved one for CommandTools
-            final_tool_args_for_execution["target"] = tool_args_from_llm.get(
-                "target", self.current_target
+        except (
+            TypeError
+        ) as e:  # Catch errors from calling the tool function with wrong args
+            logger.error(
+                f"TypeError calling tool {function_name} with args {arguments_str}: {e}",
+                exc_info=True,
             )
+            tool_output_dict = {
+                "status": "failure",
+                "error": f"Error calling tool {function_name} (check arguments): {e}",
+            }
+        except (
+            Exception
+        ) as e:  # Catch-all for other unexpected errors during tool setup/dispatch
+            logger.error(
+                f"Unexpected error preparing or calling tool {function_name}: {e}",
+                exc_info=True,
+            )
+            tool_output_dict = {
+                "status": "failure",
+                "error": f"An unexpected error occurred with tool {function_name}: {e}",
+            }
 
-        tool_instance: Any = None  # Using Any for type hint flexibility here
-        if tool_name_llm == "propose_nmap_scan":
-            tool_instance = self.nmap_tool
-        elif tool_name_llm == "propose_gobuster_scan":
-            tool_instance = self.gobuster_tool
-            if (
-                "target" in final_tool_args_for_execution
-            ):  # GobusterTool expects 'target_ip'
-                final_tool_args_for_execution["target_ip"] = (
-                    final_tool_args_for_execution.pop("target")
-                )
-            # Add this block to set ignore_cert_errors for HTTPS ports
-            port = final_tool_args_for_execution.get("port", 80)
-            if int(port) in [443, 8443]:
-                final_tool_args_for_execution["ignore_cert_errors"] = True
-        elif tool_name_llm == "propose_nikto_scan":
-            tool_instance = self.nikto_tool
-        elif tool_name_llm == "propose_smb_enum":
-            tool_instance = self.smb_tool
-        elif tool_name_llm == "propose_hydra_bruteforce":
-            tool_instance = self.hydra_tool
-        elif tool_name_llm == "propose_fetch_web_content":
-            tool_instance = self.http_fetcher_tool
-
-        self.console.print(
-            f"[green]Engaging tool [bold]{tool_display_name}[/bold] on [cyan]{primary_identifier_for_log}[/cyan]...[/green]"
-        )
-        spinner = Spinner("dots", text=f" Executing {tool_display_name}...")
-        with self.console.status(spinner):
-            if tool_instance:
-                # For CommandTool instances, check executable_path
-                if (
-                    hasattr(tool_instance, "executable_path")
-                    and not tool_instance.executable_path
-                ):
-                    msg = (
-                        f"Tool '{tool_name_llm}' cannot be executed because its executable path is not set. "
-                        f"Ensure '{getattr(tool_instance, 'executable_name', 'tool')}' is installed and configured."
-                    )
-                    logger.error(msg)
-                    tool_result_content_dict = {
-                        "error": msg,
-                        "scan_summary": "Tool misconfigured (no executable path).",
-                    }
-                else:  # Either a CommandTool with path, or a non-CommandTool like HttpPageFetcher
-                    tool_result_content_dict = tool_instance.execute(
-                        **final_tool_args_for_execution
-                    )
-            else:  # Tool instance itself is None (failed initialization)
-                msg = (
-                    f"Tool '{tool_name_llm}' cannot be executed because its instance is not available "
-                    f"(it may have failed to initialize)."
-                )
-                logger.warning(msg)
-                tool_result_content_dict = {
-                    "error": msg,
-                    "scan_summary": "Tool unavailable (initialization failed).",
+        # Convert the tool's output dictionary to a JSON string for the history
+        try:
+            tool_output_json_str = json.dumps(tool_output_dict)
+        except TypeError as e:
+            logger.error(
+                f"TypeError serializing tool output for {function_name} to JSON: {e}. Output: {tool_output_dict}",
+                exc_info=True,
+            )
+            tool_output_json_str = json.dumps(
+                {
+                    "status": "failure",
+                    "error": f"Failed to serialize tool output for {function_name}: {e}",
                 }
-
-        if "scan_summary" not in tool_result_content_dict:
-            tool_result_content_dict["scan_summary"] = tool_result_content_dict.get(
-                "error", "Scan completed with undefined summary."
             )
-        if "findings" not in tool_result_content_dict:
-            tool_result_content_dict["findings"] = {}
-        if (
-            "error" in tool_result_content_dict
-            and not tool_result_content_dict["error"]
-        ):
-            del tool_result_content_dict["error"]
+            # This indicates a problem with the tool's returned structure, but we still add it to history.
 
-        tool_result_for_llm_str = json.dumps(tool_result_content_dict)
-        tool_response_message = {
-            "role": "tool",
-            "tool_call_id": tool_id,
-            "name": tool_name_llm,
-            "content": tool_result_for_llm_str,
-        }
-        self.chat_history.append(tool_response_message)
-        logger.debug(
-            f"Appended execution result for {tool_name_llm} (ID: {tool_id}) to history. Summary: {tool_result_content_dict['scan_summary']}"
+        # Display tool output/summary to user
+        if tool_output_dict.get("status") == "failure":
+            self.console.print(
+                Panel(
+                    f"[bold red]Error from {function_name}:[/bold red]\\n{tool_output_dict.get('error', 'Unknown error')}",
+                    title="Tool Execution Failed",
+                    border_style="red",
+                )
+            )
+        elif (
+            "scan_summary" in tool_output_dict and tool_output_dict["scan_summary"]
+        ):  # For tools that provide a summary
+            self.console.print(
+                Panel(
+                    Markdown(
+                        tool_output_dict["scan_summary"]
+                    ),  # Render summary as Markdown
+                    title=f"Tool Results: {function_name}",
+                    border_style="green",
+                )
+            )
+        elif "findings" in tool_output_dict:  # Generic display for other tools
+            self.console.print(
+                Panel(
+                    json.dumps(tool_output_dict.get("findings"), indent=2),
+                    title=f"Tool Results: {function_name}",
+                    border_style="green",
+                )
+            )
+        else:  # Fallback if no clear summary or findings
+            self.console.print(
+                Panel(
+                    tool_output_json_str,
+                    title=f"Raw Tool Output: {function_name}",
+                    border_style="yellow",
+                )
+            )
+
+        # Add the tool's result to chat history
+        self.chat_history.append(
+            {
+                "tool_call_id": tool_call_id,
+                "role": "tool",
+                "name": function_name,
+                "content": tool_output_json_str,  # This MUST be a string
+            }
         )
+        self.save_session()
 
-        ai_follow_up_response = self._get_llm_response_from_agent()
-        self._process_llm_message(ai_follow_up_response)
+        # Return True if the Python function for the tool was called successfully,
+        # even if the tool itself reported an operational error (e.g., "target not found").
+        # Return False for critical errors like argument parsing, function not found, etc.
+        return tool_function_succeeded
 
     def run_task(self, task):
         # Dispatch to the correct tool and run it
@@ -900,3 +1013,134 @@ class SessionController:
                 self.console.print(result["raw_stderr"])
         if task.post_hook:
             task.post_hook(result)
+
+    def run_assistant_session(self):
+        """
+        Launch the conversational AI assistant session. This is the recommended workflow for Alien Recon.
+        """
+        print(
+            "\n[Alien Recon] Starting assistant-driven recon session. Type your commands or questions. Type 'exit' to quit.\n"
+        )
+        while True:
+            user_input = input("[assistant]> ").strip()
+            if user_input.lower() in ("exit", "quit"):
+                print("[Alien Recon] Session ended. Goodbye!")
+                break
+            # Route all tool orchestration, result parsing, and explanations through the assistant
+            self.handle_assistant_input(user_input)
+
+    def handle_assistant_input(self, user_input: str):
+        """
+        Process user input in the context of the assistant-driven session.
+        """
+        self.chat_history.append({"role": "user", "content": user_input})
+        try:
+            ai_response = self._get_llm_response_from_agent()
+            self._process_llm_message(ai_response)
+            while self.pending_tool_call:
+                if self._confirm_tool_proposal():
+                    self._execute_single_tool_call_and_update_history()
+                else:
+                    if self.pending_tool_call is not None:
+                        tool_call_id = self.pending_tool_call.id
+                        function_name = self.pending_tool_call.function.name
+                        self._send_tool_cancellation_to_llm(tool_call_id, function_name)
+                        self.pending_tool_call = None
+                        ai_response = self._get_llm_response_from_agent()
+                        self._process_llm_message(ai_response)
+                    else:
+                        break
+        except Exception as e:
+            self.console.print(f"[bold red]Error in assistant: {e}[/bold red]")
+            logger.error(f"Error in assistant conversational logic: {e}", exc_info=True)
+
+    def _resolve_and_validate_ip(
+        self, proposed_ip_str: Optional[str], param_name: str, function_name: str
+    ) -> Optional[str]:
+        """
+        Resolves a proposed IP/hostname to a valid numeric IP address.
+        Prioritizes already valid IPs, then session target IP, then DNS resolution.
+        """
+        logger.debug(
+            f"Resolving/validating IP for param '{param_name}' ('{proposed_ip_str}') in function '{function_name}'"
+        )
+
+        # If proposed_ip_str is already a valid numeric IP, use it.
+        if proposed_ip_str and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", proposed_ip_str):
+            logger.debug(
+                f"Proposed value '{proposed_ip_str}' is already a valid IP for param '{param_name}'."
+            )
+            return proposed_ip_str
+
+        # Special handling for ffuf_vhost_enum's 'ip' parameter:
+        # It MUST be the numeric IP of the server being scanned.
+        if function_name == "ffuf_vhost_enum" and param_name == "ip":
+            session_target_ip = self.get_target_ip()
+            if session_target_ip:
+                # If proposed_ip_str was not a numeric IP (e.g., it was a domain, or empty), use session_target_ip.
+                logger.info(
+                    f"For '{function_name}' param '{param_name}', using session target IP: {session_target_ip} (original proposal: '{proposed_ip_str}')."
+                )
+                return session_target_ip
+            else:
+                # No session target IP. If proposed_ip_str is a hostname, we might try to resolve it (below).
+                # If proposed_ip_str is empty or also not a hostname, this is an error for ffuf_vhost_enum.
+                if not proposed_ip_str:
+                    logger.error(
+                        f"Cannot run {function_name}: '{param_name}' is empty, and no session target IP is set."
+                    )
+                    return None
+                logger.warning(
+                    f"No session target IP for {function_name}. Will attempt to resolve '{proposed_ip_str}' if it's a hostname."
+                )
+                # Fall through to general DNS resolution at the end of this function for proposed_ip_str
+
+        # General case: if proposed_ip_str is not numeric at this point (and not handled by ffuf_vhost_enum specific logic directly above)
+        # or if proposed_ip_str was empty initially.
+        if not proposed_ip_str:  # If proposed is empty or became empty
+            session_target_ip = self.get_target_ip()
+            if session_target_ip:
+                logger.debug(
+                    f"No/invalid IP proposed for '{param_name}', using session target IP: {session_target_ip}"
+                )
+                return session_target_ip
+
+            session_target_hostname = self.get_target_hostname()
+            if session_target_hostname:
+                proposed_ip_str = session_target_hostname  # Prepare for DNS resolution if IP was needed
+                logger.debug(
+                    f"No/invalid IP proposed for '{param_name}', using session target hostname for DNS resolution: {proposed_ip_str}"
+                )
+            else:
+                logger.warning(
+                    f"Cannot resolve IP for '{param_name}': No value provided and no session target context."
+                )
+                return None
+
+        # If proposed_ip_str is still None or empty after above fallbacks, it's an issue.
+        if not proposed_ip_str:
+            logger.error(
+                f"IP resolution failed for '{param_name}': effective value to resolve is empty."
+            )
+            return None
+
+        # Attempt DNS resolution if proposed_ip_str is (now potentially) a hostname
+        logger.debug(
+            f"Attempting to resolve '{proposed_ip_str}' as a hostname for param '{param_name}'."
+        )
+        try:
+            resolved_ip = socket.gethostbyname(proposed_ip_str)
+            logger.info(
+                f"Resolved '{proposed_ip_str}' to IP: {resolved_ip} for param '{param_name}'."
+            )
+            return resolved_ip
+        except socket.gaierror:
+            logger.error(
+                f"DNS resolution failed for '{proposed_ip_str}' for param '{param_name}'."
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"Unexpected error during DNS resolution for '{proposed_ip_str}': {e}"
+            )
+            return None
