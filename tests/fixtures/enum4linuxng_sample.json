@@ -1,0 +1,7 @@
+{
+  "osinfo": {"os_version_guess": "Windows 10", "server_name": "CTF-SERVER", "workgroup": "WORKGROUP", "domain_name": "CTF.LOCAL", "fqdn": "ctf-server.ctf.local"},
+  "users": ["bob", "alice"],
+  "groups": ["Administrators", "Users"],
+  "shares": [{"name": "public"}, {"name": "IPC$"}],
+  "passwordpolicy": {"min_length": 8, "complexity": "high"}
+}

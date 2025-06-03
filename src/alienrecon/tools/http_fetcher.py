@@ -39,6 +39,12 @@ class HttpPageFetcherTool:
             "error": None,
         }
         summary = f"Attempted to fetch content from {url_to_fetch}."
+        result = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": summary,
+            "findings": findings,
+        }
 
         try:
             headers = {"User-Agent": "AlienRecon-Probe/1.0 (Web Content Sniffer)"}
@@ -77,9 +83,18 @@ class HttpPageFetcherTool:
                 else:
                     findings["page_content"] = page_content_raw
 
-                summary = f"Successfully fetched and processed text content from {url_to_fetch} (Status: {response.status_code})."
+                if not findings["page_content"]:
+                    result["status"] = "failure"
+                    result["scan_summary"] = (
+                        f"Fetch for {url_to_fetch} produced no output."
+                    )
+                    findings["error"] = "No content received. Produced no output."
+                else:
+                    result["scan_summary"] = (
+                        f"Successfully fetched and processed text content from {url_to_fetch} (Status: {response.status_code})."
+                    )
             else:
-                summary = (
+                result["scan_summary"] = (
                     f"Fetched resource from {url_to_fetch} (Status: {response.status_code}), "
                     f"but it does not appear to be a primary text-based content type "
                     f"(Content-Type: {findings['content_type']}). "
@@ -91,8 +106,9 @@ class HttpPageFetcherTool:
                 )
 
         except requests.exceptions.HTTPError as e:
-            summary = f"HTTP error fetching {url_to_fetch}: {e}"
-            logger.error(summary)
+            result["status"] = "failure"
+            result["scan_summary"] = f"HTTP error fetching {url_to_fetch}: {e}"
+            logger.error(result["scan_summary"])
             findings["error"] = str(e)
             # status_code and content_type might already be set from response.headers if response object exists
             if e.response is not None:
@@ -103,22 +119,30 @@ class HttpPageFetcherTool:
                         "content-type", ""
                     ).lower()
         except requests.exceptions.ConnectionError as e:
-            summary = f"Connection error fetching {url_to_fetch}: {e}"
-            logger.error(summary)
+            result["status"] = "failure"
+            result["scan_summary"] = f"Connection error fetching {url_to_fetch}: {e}"
+            logger.error(result["scan_summary"])
             findings["error"] = str(e)
         except requests.exceptions.Timeout as e:
-            summary = f"Timeout fetching {url_to_fetch}: {e}"
-            logger.error(summary)
+            result["status"] = "failure"
+            result["scan_summary"] = f"Timeout fetching {url_to_fetch}: {e}"
+            logger.error(result["scan_summary"])
             findings["error"] = str(e)
         except (
             requests.exceptions.RequestException
         ) as e:  # Catch other requests-related exceptions
-            summary = f"A network request error occurred fetching {url_to_fetch}: {e}"
-            logger.error(summary, exc_info=True)
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"A network request error occurred fetching {url_to_fetch}: {e}"
+            )
+            logger.error(result["scan_summary"], exc_info=True)
             findings["error"] = str(e)
         except Exception as e:  # Catch any other unexpected error
-            summary = f"An unexpected error occurred while fetching {url_to_fetch}: {e}"
-            logger.error(summary, exc_info=True)
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"An unexpected error occurred while fetching {url_to_fetch}: {e}"
+            )
+            logger.error(result["scan_summary"], exc_info=True)
             findings["error"] = str(e)
 
-        return {"scan_summary": summary, "findings": findings}
+        return result

@@ -1,0 +1,4 @@
+/admin (Status: 301) [Size: 0] [--> http://10.10.10.10/admin/]
+/index.html (Status: 200) [Size: 1234]
+/images (Status: 301) [Size: 0] [--> http://10.10.10.10/images/]
+/login.php (Status: 200) [Size: 4321]

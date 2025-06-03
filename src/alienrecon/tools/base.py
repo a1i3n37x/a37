@@ -2,10 +2,10 @@ import logging  # Logging module
 import os
 import subprocess
 from abc import ABC, abstractmethod
-from typing import Any
 
 # Correct import from core.config
 from ..core.config import TOOL_PATHS, console
+from ..core.types import ToolResult
 
 # DEFINE THE MODULE-LEVEL LOGGER
 logger = logging.getLogger(__name__)
@@ -117,19 +117,20 @@ class CommandTool(ABC):
     @abstractmethod
     def parse_output(
         self, stdout: str | None, stderr: str | None, **kwargs
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         pass
 
-    def execute(self, **kwargs) -> dict[str, Any]:
+    def execute(self, **kwargs) -> ToolResult:
         if not self.executable_path:
             err_msg = (
                 f"Tool '{self.name}' ({self.executable_name}) cannot be "
                 f"executed because its executable path was not found or is invalid. "
                 f"Please ensure '{self.executable_name}' is installed correctly and accessible."
             )
-            # Use the logger
             logger.error(err_msg)
             return {
+                "tool_name": self.name,
+                "status": "failure",
                 "scan_summary": f"{self.name.capitalize()} execution failed: Tool not found.",
                 "error": err_msg,
                 "findings": {},
@@ -139,40 +140,43 @@ class CommandTool(ABC):
             command_args = self.build_command(**kwargs)
             if not isinstance(self.executable_path, str):
                 err_msg = f"Tool '{self.name}' has an invalid executable_path type: {type(self.executable_path)}. Expected string."
-                # Use the logger
                 logger.error(err_msg)
                 return {
+                    "tool_name": self.name,
+                    "status": "failure",
                     "scan_summary": f"{self.name.capitalize()} setup error.",
                     "error": err_msg,
                     "findings": {},
                 }
-
             command = [self.executable_path] + command_args
         except (ValueError, FileNotFoundError) as e:
             err_msg = f"Error building command for {self.name}: {e}"
-            # Use the logger
             logger.error(err_msg)
             return {
+                "tool_name": self.name,
+                "status": "failure",
                 "scan_summary": f"{self.name.capitalize()} command build failed.",
                 "error": err_msg,
                 "findings": {},
             }
         except Exception as e:
             err_msg = f"Unexpected error building command for {self.name}: {e}"
-            # Use the logger
             logger.error(err_msg, exc_info=True)
             return {
+                "tool_name": self.name,
+                "status": "failure",
                 "scan_summary": f"{self.name.capitalize()} command build failed (unexpected).",
                 "error": err_msg,
                 "findings": {},
             }
-
-        stdout, stderr = run_command(
-            command
-        )  # run_command now uses its own logger calls
-
+        stdout, stderr = run_command(command)
         try:
             parsed_results = self.parse_output(stdout, stderr, **kwargs)
+            parsed_results.setdefault("tool_name", self.name)
+            if "status" not in parsed_results:
+                parsed_results["status"] = (
+                    "success" if not parsed_results.get("error") else "failure"
+                )
             if "scan_summary" not in parsed_results:
                 parsed_results["scan_summary"] = parsed_results.get(
                     "error", f"{self.name.capitalize()} scan processing completed."
@@ -181,12 +185,17 @@ class CommandTool(ABC):
                 parsed_results["findings"] = (
                     {} if isinstance(parsed_results.get("findings"), dict) else []
                 )
+            if stdout is not None:
+                parsed_results["raw_stdout"] = stdout[:5000]
+            if stderr is not None:
+                parsed_results["raw_stderr"] = stderr[:5000]
             return parsed_results
         except Exception as e:
             err_msg = f"Error parsing output for {self.name}: {e}"
-            # Use the logger
             logger.error(err_msg, exc_info=True)
             return {
+                "tool_name": self.name,
+                "status": "failure",
                 "scan_summary": f"{self.name.capitalize()} output parsing failed.",
                 "error": err_msg,
                 "raw_stdout": stdout[:500] if stdout else None,

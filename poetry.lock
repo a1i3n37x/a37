@@ -903,6 +903,17 @@ files = [
 cli = ["click (>=5.0)"]
 
 [[package]]
+name = "python-nmap"
+version = "0.7.1"
+description = "This is a python class to use nmap and access scan results from python3"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "python-nmap-0.7.1.tar.gz", hash = "sha256:f75af6b91dd8e3b0c31f869db32163f62ada686945e5b7c25f84bc0f7fad3b64"},
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.2"
 description = "YAML parser and emitter for Python"
@@ -1174,4 +1185,4 @@ test = ["covdefaults (>=2.3)", "coverage (>=7.2.7)", "coverage-enable-subprocess
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "0815f9f166368c3d2bd6835166b2df2c3d945e2e4018267109909bf31be0643f"
+content-hash = "1e6931fcb9797ea85e4af639b78a0a0433f192e7796b64932e57631c255dca57"

@@ -8,6 +8,7 @@ from typing import Any, Union  # Added Union for type hint
 
 # Ensure this path is correct if config.py is in alienrecon/core/
 from ..core.config import console
+from ..core.types import ToolResult
 
 # Import base class and utilities
 from .base import CommandTool, run_command
@@ -122,45 +123,53 @@ class SmbTool(CommandTool):
         stderr: str | None,
         parsed_json_data: dict[str, Any] | None = None,
         **kwargs,
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         target_context = kwargs.get("target", "Unknown Target")
         scan_summary = f"SMB Enumeration (enum4linux-ng) results for {target_context}:"
-        findings = {
-            "summary": {},
-            "os_info": {},
-            "users": [],
-            "groups": [],
-            "shares": [],
-            "password_policy": {},
-            "sessions": [],
-            "printers": [],
-            "domains": [],
-            "misc": {},  # Added domains and misc for flexibility
+        result: ToolResult = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": scan_summary,
+            "findings": {},
         }
-        max_list_items = 20
-
         if stderr and not parsed_json_data:
-            scan_summary = (
-                f"SMB Enumeration for {target_context} failed or produced no "
-                f"usable output."
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Enum4linux-ng scan for {target_context} failed or produced no output."
             )
-            findings["error"] = stderr.strip() if stderr else "Unknown execution error"
-            return {"scan_summary": scan_summary, "findings": findings}
-
-        if stderr:
-            scan_summary += " Scan completed with potential warnings."
-            findings["summary"]["warnings"] = stderr.strip()
-
+            result["error"] = (
+                stderr.strip()
+                if stderr
+                else "Unknown execution error. Produced no output."
+            )
+            if stdout:
+                result["raw_stdout"] = stdout[:5000]
+            if stderr:
+                result["raw_stderr"] = stderr[:5000]
+            return result
         if not parsed_json_data:
-            error_msg = "Enum4linux-ng ran but produced no JSON data."
-            if "warnings" not in findings["summary"] and not findings.get("error"):
-                findings["error"] = error_msg
-            logging.warning(f"{error_msg} Target: {target_context}")
-            scan_summary += " No data returned from scan."
-            return {"scan_summary": scan_summary, "findings": findings}
-
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Enum4linux-ng ran but produced no output for {target_context}."
+            )
+            result["error"] = "No JSON data returned. Produced no output."
+            return result
         try:
             data = parsed_json_data
+
+            findings = {
+                "summary": {},
+                "os_info": {},
+                "users": [],
+                "groups": [],
+                "shares": [],
+                "password_policy": {},
+                "sessions": [],
+                "printers": [],
+                "domains": [],
+                "misc": {},  # Added domains and misc for flexibility
+            }
+            max_list_items = 20
 
             findings["summary"]["rid_cycling_used"] = data.get(
                 "rid_cycling_used", False
@@ -253,19 +262,18 @@ class SmbTool(CommandTool):
             ):
                 scan_summary += " No detailed SMB information found or parsed."
 
-        except Exception as e:
-            logging.error(
-                f"Error processing enum4linux-ng JSON data for {target_context}: {e}",
-                exc_info=True,
-            )
-            scan_summary += " (Error occurred during results processing)."
-            findings["processing_error"] = str(e)
-            findings["raw_data_sample"] = (
-                str(parsed_json_data)[:500] if parsed_json_data else "N/A"
-            )
+            result["findings"] = findings
+            result["scan_summary"] = scan_summary
+            return result
 
-        result_dict = {"scan_summary": scan_summary, "findings": findings}
-        return result_dict
+        except Exception as e:
+            return {
+                "tool_name": self.name,
+                "status": "failure",
+                "scan_summary": f"Enum4linux-ng output parsing failed for {target_context}. Produced no output.",
+                "error": str(e),
+                "findings": {},
+            }
 
     def execute(self, **kwargs) -> dict[str, Any]:
         if not self.executable_path:

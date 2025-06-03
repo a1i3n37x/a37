@@ -1,9 +1,9 @@
 import logging
 import os
 import re
-from typing import Any
 
 from ..core.config import DEFAULT_WORDLIST  # Import default wordlist from config
+from ..core.types import ToolResult
 
 # Import base class and utilities
 from .base import CommandTool
@@ -129,165 +129,55 @@ class GobusterTool(CommandTool):
 
     def parse_output(
         self, stdout: str | None, stderr: str | None, **kwargs
-    ) -> dict[str, Any]:
-        """
-        Parses Gobuster text output into a structured dictionary.
-        Now explicitly includes the status code in the findings.
-        """
+    ) -> ToolResult:
         target_ip = kwargs.get("target_ip")
         port = kwargs.get("port")
         target_url_context = (
             f"http(s)://{target_ip}:{port}" if target_ip and port else "Unknown Target"
         )
-
-        # Check for common Gobuster errors first
+        result: ToolResult = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": f"Gobuster scan results for {target_url_context}",
+            "findings": [],
+        }
         if stderr:
-            if "status-codes and status-codes-blacklist are both set" in stderr:
-                return {
-                    "scan_summary": f"Gobuster scan for {target_url_context} failed due to conflicting status code arguments.",
-                    "error": stderr.strip(),
-                    "suggestion": "Ensure that status_codes (-s) and status_codes_blacklist (-b) are not used in a conflicting manner if custom arguments are passed.",
-                    "findings": [],
-                }
-            # Other specific Gobuster errors can be checked here
-            # For now, if stderr exists and stdout is empty, assume failure
-            if not stdout:
-                return {
-                    "scan_summary": f"Gobuster scan for {target_url_context} failed or produced no output.",
-                    "error": stderr.strip(),
-                    "findings": [],
-                }
-            else:  # stderr might contain warnings even on success
-                logger.warning(
-                    f"Gobuster for {target_url_context} reported to stderr: {stderr[:200]}"
-                )
-
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Gobuster scan for {target_url_context} failed or produced no output."
+            )
+            result["error"] = stderr.strip()
+            if stdout:
+                result["raw_stdout"] = stdout[:5000]
+            if stderr:
+                result["raw_stderr"] = stderr[:5000]
+            return result
+        if not stdout:
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Gobuster scan for {target_url_context} produced no output."
+            )
+            result["error"] = "No standard output received from Gobuster."
+            return result
         findings = []
-        count = 0
-        limit = 100  # Increased limit slightly
-        truncated = False
-
-        raw_url_base = ""
-        if target_ip and port:
-            protocol = "https" if port in [443, 8443] else "http"
-            raw_url_base = f"{protocol}://{target_ip}:{port}"
-
-        if stdout:
-            # Gobuster output line format:
-            # /path (Status: CODE) [Size: SIZE] --> /redirect_url (if 301/302)
-            # We need to capture path, status, and optionally size/redirect.
-            # Regex: ^\s*(/[^\s\(]+(?:\.\w+)?)\s*\(Status:\s*(\d+)\)(?:\s*\[Size:\s*(\d+)\])?(?:\s*\[-->\s*([^\s]+)\])?
-            # Breakdown:
-            # ^\s*                  -> Start of line, optional leading space
-            # (/[^\s\(]+(?:\.\w+)?) -> Group 1: Path (starts with /, no space/paren, optionally ends with .ext)
-            # \s*\(Status:\s*(\d+)\) -> Group 2: Status code (e.g., (Status: 200))
-            # (?:\s*\[Size:\s*(\d+)\])? -> Optional Group 3: Size (e.g., [Size: 1234])
-            # (?:\s*\[-->\s*([^\s]+)\])?-> Optional Group 4: Redirect URL (e.g., [--> http://new.url/])
-
-            # Simpler initial regex just for path and status, then refine
-            # line_pattern = re.compile(r"^\s*(?P<path>[^\s(]+)\s*\(Status:\s*(?P<status>\d+)\)")
-            # More robust pattern:
-            line_pattern = re.compile(
-                r"^(?P<path>[^ \t(]+)"  # Path: non-space, non-tab, non-( characters
-                r"\s*\(Status:\s*(?P<status>\d{3})\)"  # Status: (Status: XXX)
-                r"(?:\s*\[Size:\s*(?P<size>\d+)\])?"  # Optional Size: [Size: NNN]
-                r"(?:\s*\[-->\s*(?P<redirect>[^\]]+)\])?"  # Optional Redirect: [--> URL]
-            )
-
-            output_lines = stdout.strip().splitlines()
-            for line_content in output_lines:
-                line = line_content.strip()
-                if not line or line.startswith(
-                    ("#", "==", "Progress:", "[-]", "[+]")
-                ):  # Skip comments/progress
-                    continue
-
-                if count >= limit:
-                    truncated = True
-                    break
-
-                match = line_pattern.match(line)
-                if match:
-                    path_found = match.group("path").strip()
-                    # Ensure path starts with a slash if it's not a full URL already (Gobuster usually outputs relative paths)
-                    if not path_found.startswith(
-                        ("http://", "https://")
-                    ) and not path_found.startswith("/"):
-                        path_found = "/" + path_found
-
-                    status_found = match.group("status")
-                    item = {"path": path_found, "status": status_found}
-
-                    if raw_url_base and path_found.startswith("/"):
-                        item["full_url"] = f"{raw_url_base.rstrip('/')}{path_found}"
-                    else:  # If path_found is already a full URL or no base
-                        item["full_url"] = path_found
-
-                    if match.group("size"):
-                        item["size"] = match.group("size")
-                    if match.group("redirect"):
-                        item["redirect_to"] = match.group("redirect").strip()
-
-                    findings.append(item)
-                    count += 1
-                elif (
-                    "(Status:" in line
-                ):  # Fallback for lines that might not perfectly match but contain status
-                    logger.debug(
-                        f"Gobuster line with '(Status:' but not fully matched by regex: {line}"
-                    )
-                    # Try a simpler extraction if main regex fails for some lines
-                    simple_match = re.search(r"^(.+?)\s+\(Status:\s*(\d+)\)", line)
-                    if simple_match:
-                        path_simple = simple_match.group(1).strip()
-                        if not path_simple.startswith(
-                            ("http://", "https://")
-                        ) and not path_simple.startswith("/"):
-                            path_simple = "/" + path_simple
-                        status_simple = simple_match.group(2)
-                        findings.append(
-                            {
-                                "path": path_simple,
-                                "status": status_simple,
-                                "full_url": f"{raw_url_base.rstrip('/')}{path_simple}"
-                                if raw_url_base
-                                else path_simple,
-                                "comment": "Parsed with fallback regex",
-                            }
-                        )
-                        count += 1
-                    else:
-                        findings.append(
-                            {"raw_unparsed_finding": line}
-                        )  # Store raw if no parse
-                        count += 1
-
-        summary = f"Gobuster scan for {target_url_context} completed."
-        if stderr and not (
-            len(findings) > 0 and "error" not in findings
-        ):  # Don't override summary if findings exist and no major error
-            summary += " Scan completed with potential issues noted in stderr."
-
+        # Example line: /admin (Status: 301) [Size: 0] [--> http://10.10.10.10/admin/]
+        line_re = re.compile(r"^(?P<path>/\S*) \(Status: (?P<status>\d{3})\)")
+        for line in stdout.splitlines():
+            match = line_re.match(line.strip())
+            if match:
+                findings.append(
+                    {
+                        "path": match.group("path"),
+                        "status": match.group("status"),
+                    }
+                )
         if findings:
-            actual_findings_count = sum(
-                1 for f in findings if "raw_unparsed_finding" not in f
+            result["findings"] = findings
+            result["status"] = "success"
+        else:
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Gobuster scan for {target_url_context} produced no output."
             )
-            if actual_findings_count > 0:
-                summary += f" Found {actual_findings_count} potential paths/files."
-            elif any("raw_unparsed_finding" in f for f in findings):
-                summary += " Some output lines could not be fully parsed."
-            else:  # No actual findings parsed
-                summary += " No standard paths/files parsed from output."
-        elif not stderr:  # No findings and no error in stderr
-            summary += " No findings reported by Gobuster."
-
-        if truncated:
-            summary += f" (Results limited to first {limit} findings)."
-
-        result_dict = {"scan_summary": summary, "findings": findings}
-        if (
-            stderr and "error" not in result_dict
-        ):  # If stderr exists and we haven't already set a specific error field
-            result_dict["stderr_output"] = stderr.strip()
-
-        return result_dict
+            result["error"] = "No valid results parsed from Gobuster output."
+        return result

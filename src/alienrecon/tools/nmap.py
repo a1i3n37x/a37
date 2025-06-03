@@ -4,6 +4,8 @@ import shlex  # For safely splitting arguments string
 import xml.etree.ElementTree as ET  # For parsing Nmap XML output
 from typing import Any
 
+from ..core.types import ToolResult
+
 # Import base class
 from .base import CommandTool
 
@@ -64,78 +66,60 @@ class NmapTool(CommandTool):
 
     def parse_output(
         self, stdout: str | None, stderr: str | None, **kwargs
-    ) -> dict[str, Any]:
-        """
-        Parses Nmap XML output from stdout into a structured dictionary.
-
-        Args:
-            stdout: XML output from Nmap (-oX -), or None if execution failed badly.
-            stderr: Error output from Nmap or run_command, or None if successful.
-            **kwargs: Original arguments passed to execute (e.g., target, arguments).
-                      Used here mainly for logging context if needed.
-
-        Returns:
-            A dictionary containing the parsed scan results or error information.
-        """
+    ) -> ToolResult:
         target_context = kwargs.get("target", "Unknown Target")
         args_context = kwargs.get("arguments", "Default Args")
-
         scan_summary = f"Nmap scan results for {target_context}:"
-        results = {
-            "hosts": [],
-            "scan_arguments_used": args_context,
-        }  # Initialize structure
-
+        result: ToolResult = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": scan_summary,
+            "findings": {"hosts": []},
+        }
         if stderr:
-            scan_summary = (
-                f"Nmap scan for {target_context} failed or completed with errors."
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Nmap scan for {target_context} failed or produced no output."
             )
-            if nmap and stdout:
-                logging.warning(
-                    f"Nmap scan had errors, attempting to parse potential XML "
-                    f"output. Target: {target_context}. Stderr: {stderr}"
-                )
-                # Pass stderr to helper for potential inclusion in results
-                parsed_data = self._parse_with_python_nmap(
-                    stdout, stderr, target_context=target_context
-                )
-                if parsed_data:
-                    return parsed_data  # Return if parsing succeeded despite error
-
-            # Fallback: return error directly
-            return {"scan_summary": scan_summary, "error": stderr, "hosts": []}
-
+            result["error"] = stderr
+            result["findings"] = {"hosts": []}
+            if stdout:
+                result["raw_stdout"] = stdout[:5000]
+            if stderr:
+                result["raw_stderr"] = stderr[:5000]
+            return result
         if not stdout:
-            # No stdout, no stderr means unexpected or nmap produced no output
-            return {
-                "scan_summary": f"Nmap scan for {target_context} produced no output.",
-                "error": "No standard output received from Nmap.",
-                "hosts": [],
-            }
-
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Nmap scan for {target_context} produced no output."
+            )
+            result["error"] = (
+                "No standard output received from Nmap. Produced no output."
+            )
+            result["findings"] = {"hosts": []}
+            return result
         # --- Attempt to parse valid XML output ---
         if nmap:
-            # Preferred method: Use python-nmap library
-            parsed_data = self._parse_with_python_nmap(
-                stdout, None, target_context=target_context
-            )
-            if parsed_data:
-                return parsed_data
-            # If _parse_with_python_nmap returns None, fall through to basic XML
-
+            try:
+                parsed_data = self._parse_with_python_nmap(
+                    stdout, None, target_context=target_context
+                )
+                if parsed_data and "hosts" in parsed_data:
+                    result["findings"] = parsed_data
+                    result["scan_summary"] = scan_summary
+                    return result
+            except Exception as e:
+                logging.error(
+                    f"python-nmap failed to parse XML for {target_context}: {e}"
+                )
         # Fallback method: Basic XML parsing
-        logging.info(
-            f"Parsing Nmap XML output for {target_context} using basic ElementTree."
-        )
         try:
             root = ET.fromstring(stdout)
-            results["scan_arguments_used"] = root.get("args", args_context)
-
+            result["scan_arguments_used"] = root.get("args", args_context)
             for host_node in root.findall("host"):
                 ip_address_node = host_node.find("./address[@addrtype='ipv4']")
                 if ip_address_node is None:
                     ip_address_node = host_node.find("./address[@addrtype='ipv6']")
-
                 hostname_node = host_node.find("./hostnames/hostname")
                 host_data = {
                     "host": ip_address_node.get("addr")
@@ -147,7 +131,6 @@ class NmapTool(CommandTool):
                     "status": host_node.find("status").get("state", "unknown"),
                     "open_ports": [],
                 }
-
                 ports_node = host_node.find("ports")
                 if ports_node is not None:
                     for port_node in ports_node.findall("port"):
@@ -186,40 +169,41 @@ class NmapTool(CommandTool):
                                     "version": full_version if full_version else "N/A",
                                 }
                             )
-                results["hosts"].append(host_data)
-
-            if not results["hosts"]:
-                scan_summary += " Scan completed, but no hosts found or host was down."
+                result["findings"]["hosts"].append(host_data)
+            if not result["findings"]["hosts"]:
+                result["scan_summary"] += (
+                    " Scan completed, but no hosts found or host was down. Produced no output."
+                )
             else:
-                scan_summary += f" Found {len(results['hosts'])} host(s)."
-
-            return {"scan_summary": scan_summary, **results}
-
+                result["scan_summary"] += (
+                    f" Found {len(result['findings']['hosts'])} host(s)."
+                )
+            return result
         except ET.ParseError as e:
             logging.error(
                 f"Failed to parse Nmap XML output for {target_context}: {e}",
                 exc_info=True,
             )
             return {
-                "scan_summary": (
-                    f"Nmap scan for {target_context} completed, but failed to "
-                    f"parse XML output."
-                ),
+                "tool_name": self.name,
+                "status": "failure",
+                "scan_summary": f"Nmap scan for {target_context} completed, but failed to parse XML output. Produced no output.",
                 "error": f"XML Parse Error: {e}",
-                "raw_output_sample": stdout[:500],  # Include sample of bad XML
+                "raw_output_sample": stdout[:500] if stdout else None,
+                "findings": {"hosts": []},
             }
-        except Exception as e:  # Catch other unexpected parsing errors
+        except Exception as e:
             logging.error(
                 f"Unexpected error parsing Nmap XML for {target_context}: {e}",
                 exc_info=True,
             )
             return {
-                "scan_summary": (
-                    f"Nmap scan for {target_context} completed, but an unexpected "
-                    f"error occurred during parsing."
-                ),
+                "tool_name": self.name,
+                "status": "failure",
+                "scan_summary": f"Nmap scan for {target_context} completed, but an unexpected error occurred during parsing. Produced no output.",
                 "error": str(e),
-                "raw_output_sample": stdout[:500],
+                "raw_output_sample": stdout[:500] if stdout else None,
+                "findings": {"hosts": []},
             }
 
     def _parse_with_python_nmap(

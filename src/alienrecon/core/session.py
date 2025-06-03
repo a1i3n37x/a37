@@ -2,7 +2,9 @@
 import json
 import logging
 import os
+import random
 import re
+from datetime import datetime
 from typing import Any, Optional
 
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
@@ -11,6 +13,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
 )
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.spinner import Spinner
 
 # Tool imports
@@ -23,6 +26,7 @@ from ..tools.smb import SmbTool
 from .agent import (
     AGENT_SYSTEM_PROMPT,
     AGENT_WELCOME_MESSAGE,
+    AGENT_WELCOME_MESSAGE_WITH_TARGET,
     get_llm_response,
 )
 from .config import (
@@ -35,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 
 class SessionController:
+    SESSION_FILE = ".alienrecon_session.json"  # Default session file in CWD
+
     def __init__(self):
         self.console = Console()
         logger.debug("Initializing SessionController...")
@@ -59,6 +65,9 @@ class SessionController:
         self.hydra_tool: Optional[HydraTool] = None
         self.http_fetcher_tool: Optional[HttpPageFetcherTool] = None  # ADDED
         self._initialize_tools()
+
+        # Try to load session state if it exists
+        self.load_session()
 
         logger.info("SessionController initialized successfully.")
 
@@ -111,27 +120,89 @@ class SessionController:
 
         logger.debug("Tools initialization attempt finished.")
 
-    def display_session_status(self):
-        self.console.print(Markdown("### Alien Recon Session Status"))
-        self.console.print(
-            f"  🎯 Target: [bold cyan]{self.current_target or '[NOT SET]'}[/bold cyan]"
+    def display_session_status(self, panel: bool = False):
+        # Mission time
+        mission_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_lines = [
+            f"[bold]🟢 Mission Time:[/bold] [bold yellow]{mission_time}[/bold yellow]",
+            f"[bold]🎯 Target:[/bold] [bold cyan]{self.current_target or '[NOT SET]'}[/bold cyan]",
+            f"[bold]🤖 Mode:[/bold] {'[bold green]🟡 Novice[/bold green]' if self.is_novice_mode else '[bold magenta]🟣 Expert[/bold magenta]'}",
+        ]
+        # Tools online
+        tool_status = []
+        if self.nmap_tool:
+            tool_status.append("[bold blue]Nmap[/bold blue] 🛰️")
+        if self.gobuster_tool:
+            tool_status.append("[bold yellow]Gobuster[/bold yellow] 🚪")
+        if self.nikto_tool:
+            tool_status.append("[bold red]Nikto[/bold red] 🦠")
+        if self.smb_tool:
+            tool_status.append("[bold white]SMB Enum[/bold white] 📁")
+        if self.hydra_tool:
+            tool_status.append("[bold green]Hydra[/bold green] 🐍")
+        if self.http_fetcher_tool:
+            tool_status.append("[bold cyan]HTTP Fetcher[/bold cyan] 🌐")
+        status_lines.append(
+            "[bold]🛠️ Tools Online:[/bold] "
+            + (", ".join(tool_status) if tool_status else "[red]None[/red]")
         )
-        mode_text = "Novice" if self.is_novice_mode else "Expert"
-        mode_style = "bold green" if self.is_novice_mode else "bold yellow"
-        self.console.print(f"  🤖 Mode: [{mode_style}]{mode_text}[/{mode_style}]")
         if DEFAULT_WORDLIST:
-            self.console.print(
-                f"  📖 Default Gobuster Wordlist: {os.path.basename(DEFAULT_WORDLIST)}"
+            status_lines.append(
+                f"[bold]📖 Gobuster Wordlist:[/bold] [bold white]{os.path.basename(DEFAULT_WORDLIST)}[/bold white]"
             )
         if DEFAULT_PASSWORD_LIST:
+            status_lines.append(
+                f"[bold]🔑 Hydra Password List:[/bold] [bold white]{os.path.basename(DEFAULT_PASSWORD_LIST)}[/bold white]"
+            )
+        else:
+            status_lines.append(
+                "[bold]🔑 Hydra Password List:[/bold] [red]Not Set/Found - User/AI must specify[/red]"
+            )
+        status_text = "\n".join(status_lines)
+        if panel:
             self.console.print(
-                f"  🔑 Default Hydra Password List: {os.path.basename(DEFAULT_PASSWORD_LIST)}"
+                Panel.fit(
+                    status_text,
+                    title="[bold magenta]👽 Alien Recon Session Status[/bold magenta]",
+                    border_style="bright_magenta",
+                )
             )
         else:
             self.console.print(
-                "  🔑 Default Hydra Password List: [Not Set/Found - User/AI must specify]"
+                Markdown("### [bold magenta]Alien Recon Session Status[/bold magenta]")
             )
-        self.console.print("-" * 50)
+            for line in status_lines:
+                self.console.print(line)
+            self.console.print("-" * 50)
+
+    def save_session(self):
+        """Save current session state to SESSION_FILE."""
+        session_data = {
+            "current_target": self.current_target,
+            "chat_history": self.chat_history,
+            "is_novice_mode": self.is_novice_mode,
+        }
+        try:
+            with open(self.SESSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, indent=2)
+            logger.info(f"Session saved to {self.SESSION_FILE}")
+        except Exception as e:
+            logger.error(f"Failed to save session: {e}", exc_info=True)
+
+    def load_session(self):
+        """Load session state from SESSION_FILE if it exists."""
+        if os.path.exists(self.SESSION_FILE):
+            try:
+                with open(self.SESSION_FILE, encoding="utf-8") as f:
+                    session_data = json.load(f)
+                self.current_target = session_data.get("current_target")
+                self.chat_history = session_data.get("chat_history", [])
+                self.is_novice_mode = session_data.get("is_novice_mode", True)
+                logger.info(f"Session loaded from {self.SESSION_FILE}")
+            except Exception as e:
+                logger.error(f"Failed to load session: {e}", exc_info=True)
+        else:
+            logger.info("No previous session file found; starting fresh.")
 
     def set_target(self, target_address: str):
         is_valid_target = False
@@ -155,6 +226,7 @@ class SessionController:
                 self.chat_history = []
                 self.pending_tool_call = None
                 logger.debug("Chat history cleared due to new target.")
+                self.save_session()
             else:
                 self.console.print(
                     f"[blue]Session Target re-confirmed:[/blue] {self.current_target}"
@@ -176,6 +248,7 @@ class SessionController:
                 f"[cyan]Guidance mode set to: [bold]{mode_text}[/bold][/cyan]"
             )
             logger.info(f"Novice mode set to: {self.is_novice_mode}")
+            self.save_session()
         else:
             mode_text = "Novice" if novice else "Expert"
             self.console.print(
@@ -183,16 +256,56 @@ class SessionController:
             )
 
     def start_interactive_recon_session(self):
+        # ASCII Art Banner (Alien/Space/CTF theme)
+        ascii_banner = r'''[bold green]
+      .-"""-.
+     / .===. \
+     \/ 6 6 \/
+     ( \___/ )
+ ___ooo__V__ooo___
+[magenta]  ALIEN RECON: CTF OPS CENTER  [/magenta]
+[/bold green]'''
+        self.console.print(ascii_banner, highlight=True)
+
+        # Pro Tips / Alien Intel
+        pro_tips = [
+            "[bold cyan]Alien Intel:[/bold cyan] Use [bold]Nmap[/bold] with -sV to detect service versions for more targeted attacks!",
+            "[bold cyan]Alien Intel:[/bold cyan] Check robots.txt and .git/ directories for hidden clues on web servers.",
+            "[bold cyan]Alien Intel:[/bold cyan] Use [bold]Gobuster[/bold] with different wordlists for deeper directory brute-forcing.",
+            "[bold cyan]Alien Intel:[/bold cyan] Look for usernames in HTML comments and error messages!",
+            "[bold cyan]Alien Intel:[/bold cyan] Hydra is powerful, but always check for account lockout policies first.",
+            "[bold cyan]Alien Intel:[/bold cyan] [bold]SMB shares[/bold] can leak sensitive files—enumerate thoroughly!",
+            "[bold cyan]Alien Intel:[/bold cyan] If you get stuck, ask: 'What else can we do?' or try a different tool!",
+            "[bold cyan]Alien Intel:[/bold cyan] [bold]Nikto[/bold] can reveal web server misconfigurations and vulnerabilities quickly.",
+            "[bold cyan]Alien Intel:[/bold cyan] Use [bold]Expert Mode[/bold] for less hand-holding and faster ops!",
+        ]
+        pro_tip = random.choice(pro_tips)
+
         if not self.current_target:
+            self.console.print("[bold magenta]👽 Welcome, Earthling![/bold magenta]")
+            self.console.print(Markdown(AGENT_WELCOME_MESSAGE))
+            self.display_session_status()
             self.console.print(
-                "[bold red]Recon Error: No target set. Use 'target <addr>' or `recon --target <addr>`.[/bold red]"
+                "Type '[bold yellow]exit[/bold yellow]' or '[bold yellow]quit[/bold yellow]' to end recon and return to CLI."
             )
+            self.console.print("-" * 50)
+            self.console.print(pro_tip)
+            logger.info("Interactive session started with no target set.")
             return
 
-        self.console.print(Markdown(AGENT_WELCOME_MESSAGE))
-        self.display_session_status()
-        self.console.print("Type 'exit' or 'quit' to end recon and return to CLI.")
-        self.console.print("-" * 50)
+        # If target is set, use the concise welcome message
+        welcome_msg = AGENT_WELCOME_MESSAGE_WITH_TARGET.replace(
+            "[TARGET]", f"[bold cyan]{self.current_target}[/bold cyan]"
+        )
+        self.console.print("[bold magenta]👽 Welcome, Operative![/bold magenta]")
+        self.console.print(welcome_msg, highlight=True)
+        self.console.print("\n" + "[bold green]" + "⎯" * 60 + "[/bold green]\n")
+        self.display_session_status(panel=True)
+        self.console.print(
+            "Type '[bold yellow]exit[/bold yellow]' or '[bold yellow]quit[/bold yellow]' to end recon and return to CLI."
+        )
+        self.console.print("[bold green]" + "⎯" * 60 + "[/bold green]")
+        self.console.print(pro_tip)
 
         logger.info(f"Starting interactive reconnaissance for {self.current_target}")
 

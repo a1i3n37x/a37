@@ -6,6 +6,7 @@ import shlex
 import tempfile
 from typing import Any
 
+from ..core.types import ToolResult
 from .base import CommandTool, run_command
 
 logger = logging.getLogger(__name__)
@@ -80,73 +81,72 @@ class NiktoTool(CommandTool):
         stderr: str | None,
         parsed_json_data: dict[str, Any] | None = None,
         **kwargs,
-    ) -> dict[str, Any]:
-        # ... (Your complete existing parse_output logic)
+    ) -> ToolResult:
         target_context = (
             f"{kwargs.get('target', 'Unknown')}:{kwargs.get('port', 'N/A')}"
         )
         scan_summary = f"Nikto scan results for {target_context}:"
-        findings = {
-            "host_info": {},
-            "vulnerabilities": [],
-            "informational": [],
-            "error": None,
-            "warning": None,
+        result: ToolResult = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": scan_summary,
+            "findings": {},
         }
-        limit_per_type = 50
-        truncated = False
-
         if stderr and not parsed_json_data:
-            scan_summary = (
-                f"Nikto scan for {target_context} failed or produced no usable output."
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Nikto scan for {target_context} failed or produced no output."
             )
-            findings["error"] = stderr.strip()
-            if stdout and "error" in stdout.lower():
-                findings["error"] += f"\nStdout sample: {stdout[:200]}"
-            return {"scan_summary": scan_summary, "findings": findings}
-
-        if stderr:
-            scan_summary += " Scan completed with potential warnings/errors."
-            findings["warning"] = f"Scan stderr reported: {stderr.strip()}"
-
+            result["error"] = stderr.strip()
+            if stdout:
+                result["raw_stdout"] = stdout[:5000]
+            if stderr:
+                result["raw_stderr"] = stderr[:5000]
+            return result
         if not parsed_json_data:
-            error_msg = "Nikto ran but produced no JSON data."
-            if not stderr:
-                findings["error"] = error_msg
-                logging.warning(f"{error_msg} Target: {target_context}")
-            scan_summary += " No vulnerability data returned."
-            return {"scan_summary": scan_summary, "findings": findings}
-
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Nikto ran but produced no output for {target_context}."
+            )
+            result["error"] = "No JSON data returned. Produced no output."
+            return result
         try:
             data = parsed_json_data
-            findings["host_info"]["target_ip"] = data.get("ip")
+            result["findings"]["host_info"] = {
+                "target_ip": data.get("ip"),
+            }
+            # Copy vulnerabilities if present
+            if "vulnerabilities" in data:
+                result["findings"]["vulnerabilities"] = data["vulnerabilities"]
             # ... (rest of your parsing logic) ...
-            if findings["vulnerabilities"]:
-                scan_summary += (
-                    f" Found {len(findings['vulnerabilities'])} potential findings."
+            if result["findings"].get("vulnerabilities"):
+                result["scan_summary"] += (
+                    f" Found {len(result['findings']['vulnerabilities'])} potential findings."
                 )
-            elif not findings["error"]:
-                scan_summary += (
+            elif not result.get("error"):
+                result["scan_summary"] += (
                     " No specific vulnerabilities identified by active checks."
                 )
-            if truncated:
-                scan_summary += (
-                    f" (Vulnerability list limited to first {limit_per_type})."
+            if result["findings"].get("error"):
+                result["scan_summary"] += f" (Error: {result['findings']['error']})"
+            if result["findings"].get("warning"):
+                result["scan_summary"] += f" (Warning: {result['findings']['warning']})"
+            if result["findings"].get("informational"):
+                result["scan_summary"] += (
+                    f" (Informational: {len(result['findings']['informational'])})"
                 )
-
+            if result["findings"].get("error"):
+                result["error"] = result["findings"]["error"]
+            result["findings"]["raw_json_sample"] = str(parsed_json_data)[:500]
+            return result
         except Exception as e:
-            logging.error(
-                f"Error processing Nikto JSON data for {target_context}: {e}",
-                exc_info=True,
-            )
-            scan_summary += " (Error occurred during results processing)."
-            findings["error"] = (
-                (findings.get("error") or "") + f"; JSON Processing Error: {str(e)}"
-            ).strip("; ")
-            findings["raw_json_sample"] = str(parsed_json_data)[:500]
-
-        result_dict = {"scan_summary": scan_summary, "findings": findings}
-        return result_dict
+            return {
+                "tool_name": self.name,
+                "status": "failure",
+                "scan_summary": f"Nikto output parsing failed for {target_context}. Produced no output.",
+                "error": str(e),
+                "findings": {},
+            }
 
     def execute(self, **kwargs) -> dict[str, Any]:
         if not self.executable_path:

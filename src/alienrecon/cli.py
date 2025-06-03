@@ -1,9 +1,19 @@
 # src/alienrecon/cli.py
 import logging
+import os
 from typing import Optional
 
+import openai
 import typer
 from rich.console import Console
+from rich.panel import Panel
+
+from alienrecon.core.config import (
+    API_KEY,
+    DEFAULT_PASSWORD_LIST,
+    DEFAULT_WORDLIST,
+    TOOL_PATHS,
+)
 
 # Ensure this import path is correct after file moves
 from alienrecon.core.session import SessionController
@@ -22,6 +32,9 @@ cli_console = Console()  # For messages directly from the CLI framework
 # SessionController will have its own logger.
 # Logging will be reconfigured in main_callback based on user input
 module_logger = logging.getLogger("alienrecon.cli")
+
+# Global session controller instance for CLI commands that need persistence
+session_controller: Optional[SessionController] = None
 
 
 @app.callback()
@@ -63,21 +76,28 @@ def main_callback(
     # Log the effective log level being used by the application's root logger
     logging.getLogger().info(f"Logging level set to {log_level.upper()}")
 
-    # For now, SessionController is instantiated per 'recon' command.
-    # If we need persistent state across 'target' and 'recon' calls
-    # within one CLI invocation, we'd use ctx.obj.
+    global session_controller
+    session_controller = SessionController()
+    ctx.obj = {"session_controller": session_controller}
     module_logger.debug("Main CLI callback invoked, logging configured.")
 
 
 @app.command()
 def init():
     """
-    Initialize Alien Recon workspace (Planned Feature).
+    Initialize Alien Recon workspace (creates .alienrecon/ directory).
     """
-    cli_console.print(
-        "[cyan]Initialize Alien Recon workspace... (Not yet fully implemented)[/cyan]"
-    )
-    module_logger.info("`init` command executed (stub).")
+    workspace_dir = ".alienrecon"
+    if not os.path.exists(workspace_dir):
+        os.makedirs(workspace_dir)
+        cli_console.print(
+            f"[green]Created workspace directory: {workspace_dir}[/green]"
+        )
+    else:
+        cli_console.print(
+            f"[yellow]Workspace directory already exists: {workspace_dir}[/yellow]"
+        )
+    module_logger.info("`init` command executed.")
 
 
 @app.command()
@@ -86,17 +106,89 @@ def target(
         ...,  # Required argument
         help="The IP address or domain name to make the current session target.",
     ),
+    ctx: typer.Context = typer.Option(None, hidden=True),
 ):
     """
     Set/update the primary target for the *next* recon session.
-    (This command is a placeholder until session state persistence is added.
-    For now, use `recon --target <addr>` for each recon run.)
+    Now persists the target using session persistence.
     """
+    sc = (
+        ctx.obj["session_controller"]
+        if ctx and "session_controller" in ctx.obj
+        else SessionController()
+    )
+    sc.set_target(target_address)
+    sc.save_session()
     cli_console.print(
-        f"[green]Target noted:[/green] {target_address}. "
+        f"[green]Target set and saved:[/green] {target_address}. "
         "Use `recon --target ...` to start a session with this target."
     )
-    module_logger.info(f"`target` command executed, target noted: {target_address}")
+    module_logger.info(
+        f"`target` command executed, target set and saved: {target_address}"
+    )
+
+
+@app.command()
+def status(ctx: typer.Context = typer.Option(None, hidden=True)):
+    """
+    Show current session status (target, mode, chat history length).
+    """
+    sc = (
+        ctx.obj["session_controller"]
+        if ctx and "session_controller" in ctx.obj
+        else SessionController()
+    )
+    sc.display_session_status()
+    cli_console.print(f"[dim]Chat history length: {len(sc.chat_history)}[/dim]")
+    module_logger.info("`status` command executed.")
+
+
+@app.command()
+def save(ctx: typer.Context = typer.Option(None, hidden=True)):
+    """
+    Manually save the current session state.
+    """
+    sc = (
+        ctx.obj["session_controller"]
+        if ctx and "session_controller" in ctx.obj
+        else SessionController()
+    )
+    sc.save_session()
+    cli_console.print("[green]Session state saved.[/green]")
+    module_logger.info("`save` command executed.")
+
+
+@app.command()
+def load(ctx: typer.Context = typer.Option(None, hidden=True)):
+    """
+    Reload session state from disk.
+    """
+    sc = (
+        ctx.obj["session_controller"]
+        if ctx and "session_controller" in ctx.obj
+        else SessionController()
+    )
+    sc.load_session()
+    cli_console.print("[green]Session state loaded from disk.[/green]")
+    module_logger.info("`load` command executed.")
+
+
+@app.command()
+def clear(ctx: typer.Context = typer.Option(None, hidden=True)):
+    """
+    Clear/reset the current session state (target, chat history, mode).
+    """
+    sc = (
+        ctx.obj["session_controller"]
+        if ctx and "session_controller" in ctx.obj
+        else SessionController()
+    )
+    sc.current_target = None
+    sc.chat_history = []
+    sc.is_novice_mode = True
+    sc.save_session()
+    cli_console.print("[yellow]Session state cleared.[/yellow]")
+    module_logger.info("`clear` command executed.")
 
 
 @app.command()
@@ -169,6 +261,113 @@ def recon(
             f"[bold red]An unexpected critical error occurred in CLI: {e}[/bold red]"
         )
         raise typer.Exit(code=1)
+
+
+@app.command()
+def doctor():
+    """
+    Run a self-test to check tool dependencies, API connectivity, and environment health.
+    """
+    cli_console.print(
+        Panel.fit(
+            "[bold magenta]👽 Alien Recon Doctor: System Self-Test[/bold magenta]",
+            border_style="magenta",
+        )
+    )
+    checks = []
+    # Tool checks
+    required_tools = [
+        ("nmap", "Nmap 🛰️"),
+        ("gobuster", "Gobuster 🚪"),
+        ("nikto", "Nikto 🦠"),
+        ("enum4linux-ng", "enum4linux-ng 📁"),
+        ("hydra", "Hydra 🐍"),
+    ]
+    for tool, label in required_tools:
+        path = TOOL_PATHS.get(tool)
+        if path and os.path.exists(path) and os.access(path, os.X_OK):
+            checks.append(
+                (f"[bold green]✔ {label} found[/bold green] ([dim]{path}[/dim])", True)
+            )
+        else:
+            checks.append((f"[bold red]✖ {label} NOT found[/bold red]", False))
+    # Wordlist/password list checks
+    if DEFAULT_WORDLIST and os.path.exists(DEFAULT_WORDLIST):
+        checks.append(
+            (
+                f"[bold green]✔ Gobuster wordlist found[/bold green] ([dim]{DEFAULT_WORDLIST}[/dim])",
+                True,
+            )
+        )
+    else:
+        checks.append(
+            (
+                f"[bold red]✖ Gobuster wordlist NOT found[/bold red] ([dim]{DEFAULT_WORDLIST or 'Not Set'}[/dim])",
+                False,
+            )
+        )
+    if DEFAULT_PASSWORD_LIST and os.path.exists(DEFAULT_PASSWORD_LIST):
+        checks.append(
+            (
+                f"[bold green]✔ Hydra password list found[/bold green] ([dim]{DEFAULT_PASSWORD_LIST}[/dim])",
+                True,
+            )
+        )
+    else:
+        checks.append(
+            (
+                f"[bold red]✖ Hydra password list NOT found[/bold red] ([dim]{DEFAULT_PASSWORD_LIST or 'Not Set'}[/dim])",
+                False,
+            )
+        )
+    # OpenAI API key check
+    if API_KEY:
+        checks.append(("[bold green]✔ OPENAI_API_KEY set[/bold green]", True))
+        # Try OpenAI connectivity
+        try:
+            client = openai.OpenAI(api_key=API_KEY)
+            client.models.list()
+            checks.append(
+                ("[bold green]✔ OpenAI API connectivity OK[/bold green]", True)
+            )
+        except Exception as e:
+            checks.append(
+                (
+                    f"[bold red]✖ OpenAI API connectivity FAILED[/bold red] ([dim]{e}[/dim])",
+                    False,
+                )
+            )
+    else:
+        checks.append(("[bold red]✖ OPENAI_API_KEY NOT set[/bold red]", False))
+    # Print results
+    all_ok = all(ok for _, ok in checks)
+    for msg, _ in checks:
+        cli_console.print(msg)
+    cli_console.print(
+        "\n"
+        + (
+            "[bold green]All systems go! Alien Recon is ready for launch. 🚀[/bold green]"
+            if all_ok
+            else "[bold red]Some checks failed. See above for details and remediation advice.[/bold red]"
+        )
+    )
+    # Remediation advice
+    if not all_ok:
+        cli_console.print(
+            Panel.fit(
+                "[bold yellow]Remediation Tips:[/bold yellow]\n"
+                "- Install missing tools with your package manager (e.g., apt install nmap gobuster nikto enum4linux-ng hydra)\n"
+                "- Set or fix your OPENAI_API_KEY in your .env or environment\n"
+                "- Download missing wordlists (e.g., SecLists for Gobuster, rockyou.txt for Hydra)\n"
+                "- Check your internet connection if OpenAI API fails\n"
+                "- See the README for more help!",
+                border_style="yellow",
+            )
+        )
+    else:
+        cli_console.print(
+            "[bold cyan]👽 Doctor check complete. Happy hacking![/bold cyan]"
+        )
 
 
 if __name__ == "__main__":

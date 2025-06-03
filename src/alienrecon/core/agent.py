@@ -168,6 +168,20 @@ Ready when you are! What's the target?
 If you get stuck or want more ideas, just ask "What else can we do?" or "I'm stuck."
 """
 
+AGENT_WELCOME_MESSAGE_WITH_TARGET = """
+Hello! I'm Alien Recon, your AI assistant from Alien37.com, here to help you
+navigate this Capture The Flag challenge. Target acquired: [TARGET].
+
+I'm ready to guide you through reconnaissance and analysis, much like a mission controller or a helpful teammate.
+
+**Important Reminder:** Always operate strictly within the rules and scope
+defined by the CTF organizers. Ethical conduct is key, even in these learning
+environments.
+
+Let's get started with reconnaissance on your target!
+If you get stuck or want more ideas, just ask "What else can we do?" or "I'm stuck."
+"""
+
 # --- OpenAI Tool Definitions ---
 tools = [
     {  # ADDED HTTP PAGE FETCHER TOOL DEFINITION

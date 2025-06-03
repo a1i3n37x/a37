@@ -1,9 +1,9 @@
 import logging
 import os
 import re
-from typing import Any
 
 from ..core.config import DEFAULT_PASSWORD_LIST  # Import default password list
+from ..core.types import ToolResult
 from .base import CommandTool
 
 logger = logging.getLogger(__name__)
@@ -154,150 +154,56 @@ class HydraTool(CommandTool):
 
     def parse_output(
         self, stdout: str | None, stderr: str | None, **kwargs
-    ) -> dict[str, Any]:
-        """
-        Parses Hydra output to find successful logins.
-
-        Args:
-            stdout: Raw text output from Hydra execution.
-            stderr: Error output from Hydra or run_command.
-            **kwargs: Original arguments for context.
-
-        Returns:
-            A dictionary containing the parsed scan results or error information.
-        """
+    ) -> ToolResult:
         target_context = kwargs.get("target", "Unknown Target")
         username_context = kwargs.get("username", "N/A")
         service_context = kwargs.get("service_protocol", "N/A")
         path_context = kwargs.get("path", "")
-
+        result: ToolResult = {
+            "tool_name": self.name,
+            "status": "success",
+            "scan_summary": f"Hydra scan results for {target_context} ({service_context}{path_context} user {username_context})",
+            "findings": {},
+        }
         if stderr:
-            # Hydra often prints "0 valid passwords found" to stderr on failure,
-            # which isn't a critical error for parsing, but good to note.
-            # Critical errors (e.g., can't connect) also go to stderr.
-            logger.warning(
-                f"Hydra for {target_context} ({service_context}{path_context} user {username_context}) reported to stderr: {stderr[:200]}"
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Hydra scan for {target_context} failed or produced no output."
             )
-
-        findings = {}
-        if stdout:
-            # Example success line:
-            # [80][http-get] host: 10.10.199.90 login: bob password: password123
-            # Regex to capture this:
-            # For service with port: \[(\d+)\]\[([^\]]+)\] host: ([^\s]+) login: ([^\s]+) password: (.+)
-            # For service without port (e.g. ssh): host: ([^\s]+) service: (\d+|ssh|ftp) login: ([^\s]+) password: (.+) -- needs adjustment
-
-            # Simpler regex focusing on the core part if Hydra output is consistent:
-            # "host: <host> login: <login> password: <password>"
-            # Let's try a more specific one for the common output format
-
-            # Regex to find the successful login line
-            # It might start with a port and service, or directly with host
-            # Example: 10.10.11.110  ssh   login: msfadmin password: msfadmin
-            # Example: [80][http-get] host: 10.10.149.215 login: bob password: test
-
-            # This regex tries to capture the essential parts of a success line
-            # It allows for an optional prefix like "[80][http-get]"
-            success_pattern = re.compile(
-                r"(?:\[\d+\]\[[^\]]+\]\s+)?host:\s*([^\s]+)\s+(?:service:\s*\S+\s+)?login:\s*([^\s]+)\s+password:\s*(.+)",
-                re.IGNORECASE,
-            )
-
-            match = success_pattern.search(stdout)
-
-            if match:
-                # Matched groups depend on the exact pattern used
-                # Assuming the simpler pattern for now, or adjusting based on common Hydra output
-                # For: host: ([^\s]+) login: ([^\s]+) password: (.+)
-                # host_found = match.group(1)
-                # login_found = match.group(2)
-                # password_found = match.group(3).strip() # Strip potential trailing spaces
-
-                # For more complex pattern:
-                # (?:\[\d+\]\[[^\]]+\]\s+)?  -> Optional non-capturing group for [port][service]
-                # host:\s*([^\s]+)           -> Group 1: host
-                # (?:service:\s*\S+\s+)?    -> Optional non-capturing group for "service: xyz"
-                # login:\s*([^\s]+)          -> Group 2: login
-                # password:\s*(.+)           -> Group 3: password
-
-                # Re-check group indices if pattern changes.
-                # With the current complex pattern, they should be 1, 2, 3 for host, login, password respectively if all parts match.
-                # If the optional prefix isn't there, the groups shift. This pattern is tricky.
-
-                # Let's use a simpler, more direct approach by looking for lines containing "password: "
-                lines = stdout.splitlines()
-                for line in lines:
-                    if (
-                        "login:" in line and "password:" in line and "host:" in line
-                    ):  # A good indicator of a success line
-                        # Try to parse this specific line format
-                        # Example: [80][http-get] host: 10.10.149.215 login: bob password: test
-                        parts_match = re.search(
-                            r"host:\s*([^\s]+)\s*login:\s*([^\s]+)\s*password:\s*(.+)",
-                            line,
-                            re.IGNORECASE,
-                        )
-                        if parts_match:
-                            found_host = parts_match.group(1)
-                            found_login = parts_match.group(2)
-                            found_password = parts_match.group(3).strip()
-
-                            findings = {
-                                "host": found_host,
-                                "username": found_login,
-                                "password": found_password,
-                                "service_protocol": service_context,
-                                "target_path": path_context,
-                            }
-                            scan_summary = (
-                                f"Hydra successfully found credentials for {username_context} "
-                                f"on {target_context}:{kwargs.get('port', 'N/A')}{path_context} ({service_context})."
-                            )
-                            # Break after first find, assuming one user target
-                            if (
-                                username_context == found_login
-                            ):  # Prioritize if it matches the input username
-                                break
-                if not findings:  # If loop finished with no specific match
-                    scan_summary = (
-                        f"Hydra scan completed for {username_context} on "
-                        f"{target_context}:{kwargs.get('port', 'N/A')}{path_context} ({service_context}). No password found with the "
-                        f"provided list, or output format unexpected."
-                    )
-                    if (
-                        stdout
-                    ):  # Include some stdout if parsing failed but output exists
-                        findings["raw_stdout_sample"] = stdout[:200]
-
-            else:  # No regex match in the entire stdout
-                scan_summary = (
-                    f"Hydra scan completed for {username_context} on "
-                    f"{target_context}:{kwargs.get('port', 'N/A')}{path_context} ({service_context}). No password found with the "
-                    f"provided list."
-                )
-                if stdout:  # Include some stdout if parsing failed but output exists
-                    findings["raw_stdout_sample"] = stdout[:200]
-        else:  # No stdout at all
-            scan_summary = (
-                f"Hydra scan for {username_context} on {target_context}:{kwargs.get('port', 'N/A')}{path_context} ({service_context}) "
-                f"produced no output."
-            )
+            result["error"] = stderr.strip()
+            if stdout:
+                result["raw_stdout"] = stdout[:5000]
             if stderr:
-                findings["error_details"] = stderr[:200]
-
-        result_dict = {"scan_summary": scan_summary, "findings": findings}
-        if (
-            stderr and "error_details" not in findings and "password" not in findings
-        ):  # Add stderr if it seems like an error and not just "0 found"
-            if (
-                "0 valid passwords found" not in stderr.lower()
-                and "failed to connect" in stderr.lower()
-            ):
-                result_dict["error"] = stderr.strip()
-            elif (
-                "0 valid passwords found" in stderr.lower()
-                and "password" not in findings
-            ):  # Explicitly note no creds found
-                result_dict["findings"]["status"] = "No credentials found"
-
-        return result_dict
+                result["raw_stderr"] = stderr[:5000]
+            return result
+        if not stdout:
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Hydra scan for {target_context} produced no output."
+            )
+            result["error"] = "No standard output received from Hydra."
+            return result
+        findings = {}
+        # More robust regex for host, username, password
+        line_re = re.compile(
+            r"host:\s*(?P<host>\S+)\s+login:\s*(?P<username>\S+)\s+password:\s*(?P<password>\S+)"
+        )
+        for line in stdout.splitlines():
+            match = line_re.search(line.strip())
+            if match:
+                findings = {
+                    "host": match.group("host"),
+                    "username": match.group("username"),
+                    "password": match.group("password"),
+                }
+                break
+        if findings:
+            result["findings"] = findings
+            result["status"] = "success"
+        else:
+            result["status"] = "failure"
+            result["scan_summary"] = (
+                f"Hydra scan for {target_context} produced no output."
+            )
+            result["error"] = "No valid credentials parsed from Hydra output."
+        return result
