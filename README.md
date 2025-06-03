@@ -100,7 +100,7 @@ Use it wrong, and you’re not a hacker... you’re a dumbass with a felony.
 
 ## 🌌 Credits + Crew
 
-- Orchestrated by the rogue coders of [Alien37.com](https://alien37.com)
+- From the misfits behind [Alien37.com](https://alien37.com)
 - Core design + narrative flow: `@a1i3n37x`
 - Purpose-built for that **Novice → Pro** recon evolution
 
