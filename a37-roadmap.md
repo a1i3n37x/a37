@@ -9,7 +9,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 - ✅ **Parser tests, fixtures, and ToolResult schema are complete and enforced.**
 - ✅ **Test coverage is high, including edge and error cases.**
 - ✅ **Rich error handling and consistent output schemas.**
-- 🟢 **Ready to move into Phase 3: TaskQueue & Auto-Recon.**
+- 🟢 **Ready to move into Phase 3: Modular, User-Driven Recon.**
 
 ---
 
@@ -60,21 +60,21 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 
 ---
 
-**Phase 3: TaskQueue & Auto-Recon Loop (1 week)**
-*Goal: Enable chained scans without constant prompts via TaskQueue and `recon --auto`, providing a faster path through initial recon stages.*
+**Phase 3: Modular, User-Driven Recon (1 week)**
+*Goal: Refocus on a flexible, user-driven workflow. Remove auto-recon and TaskQueue orchestration. Make each tool integration robust, user-friendly, and easy to run individually or in user-defined sequences.*
 
-*   [ ] **`TaskDetail` & `TaskQueue` Implementation:**
-    *   [ ] Define `TaskDetail` (e.g., Pydantic model) to encapsulate tool name, target, arguments, port, wordlist, and a `post_hook` callback.
-    *   [ ] Create a `TaskQueue` class to manage a list of `TaskDetail` objects, with methods for adding tasks and processing them.
-*   [ ] **Auto Mode (`recon --auto`):**
-    *   [ ] In `SessionController.start_auto_recon()`:
-        *   Enqueue an initial Nmap scan task.
-        *   The Nmap task's `post_hook` will analyze Nmap results and dynamically enqueue appropriate follow-up tasks (Gobuster/Nikto for web ports, enum4linux-ng for SMB). This logic will be rule-based for initial implementation (not LLM-driven for task generation within auto-mode to ensure speed and cost-effectiveness).
-        *   The `TaskQueue` processes tasks sequentially.
-        *   LLM can be used at the *end* of the auto-recon sequence for a comprehensive summary of all findings.
-*   [ ] **Confirmation Matrix for Auto Mode:**
-    *   If `is_novice_mode` is true, `TaskQueue.process_next_task()` uses `_confirm_tool_proposal` before executing each task.
-    *   If `is_novice_mode` is false (expert), `TaskQueue` presents a summary of all planned scans from the current batch for a single confirmation, or runs them directly (user preference to be determined, perhaps via a config or sub-flag like `--auto-confirm-expert`).
+*   [ ] **Manual Tool Execution:**
+    *   [ ] Ensure each tool (nmap, gobuster, nikto, enum4linux-ng, hydra, http-fetcher) can be run independently with clear CLI options and argument validation.
+    *   [ ] Improve help messages, error handling, and user feedback for each tool.
+*   [ ] **Flexible Task Management:**
+    *   [ ] Allow users to select, queue, and reorder tasks manually (if desired), but do not enforce automation.
+    *   [ ] Provide CLI flags or interactive prompts for chaining tools, but keep user in control.
+*   [ ] **Results Management:**
+    *   [ ] Store and organize results from each tool run for easy review and comparison.
+    *   [ ] Allow users to re-run or compare results from different tools or runs.
+*   [ ] **Documentation & Usability:**
+    *   [ ] Update documentation to reflect the new manual-first workflow.
+    *   [ ] Add usage examples and best practices for running and combining tools.
 
 **Status: Phase 3 - NEXT UP**
 
@@ -88,14 +88,14 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
     *   [ ] Implement logic to fetch/load this metadata (initially could be local files, later a small shared repo).
     *   [ ] Create a mission folder for the user, potentially pre-populating VPN config files or notes.
 *   [ ] **`quick-recon` macro/command:**
-    *   [ ] A wrapper command that essentially runs `recon --target <ip_from_init> --auto [--novice/--expert based on preference]` with opinionated default settings suitable for quick initial assessment of common CTF boxes.
+    *   [ ] A wrapper command that helps users quickly run a sequence of recon tools with opinionated default settings, but always with user confirmation and control.
 *   [ ] **Exploit Suggestion (formerly Auto-Exploit Stub):**
     *   [ ] Based on service versions identified (Nmap, Nikto) and potential vulnerabilities (Nikto):
         *   Integrate `searchsploit` or a similar local exploit database lookup.
         *   The AI will present potential exploits or vulnerability categories found, explaining them.
         *   **Crucially, guide the user on how to *manually* research and attempt these using Metasploit or other tools, rather than auto-firing.** This maintains focus on learning. (e.g., "Nmap identified vsftpd 2.3.4. This version is known to be vulnerable (CVE-XXXX-XXXX). You could try searching for modules in Metasploit using `search vsftpd 2.3.4` and then learn to configure and run the `exploit/unix/ftp/vsftpd_234_backdoor` module.")
 *   [ ] **`debrief` generator:**
-    *   [ ] After a session (interactive or auto), allow the user to generate a templated Markdown report.
+    *   [ ] After a session, allow the user to generate a templated Markdown report.
     *   [ ] The report should summarize:
         *   Target information.
         *   Key Nmap findings.
@@ -156,24 +156,24 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 **Your Vision & Goals:**
 - Make CTF recon accessible, fast, and educational.
 - Blend automation with AI mentorship: teach users the "why" and "how" of recon, not just the "what".
-- Enable both guided (novice) and power-user (expert/auto) workflows.
+- Enable both guided (novice) and power-user (expert) workflows, but always with user control.
 - Build a foundation for extensibility: new tools, new task types, new learning modules.
 
 **What You're Working Towards:**
-- Phase 3: Orchestrated, rule-based auto-recon (TaskQueue, TaskDetail, auto mode).
+- Phase 3: Modular, user-driven recon with robust, flexible tool execution and results management.
 - Phase 4: "Zero-to-First-Blood"—a newcomer can get a flag with AI help, and generate a debrief report.
 - Phase 4.5: MITRE ATT&CK tagging and educational context.
 
 **Strategic Recommendations:**
-- **Move into Phase 3 now:** Your core is strong and tested. Build the orchestration layer (TaskQueue, auto mode) with your current tools. This will validate your architecture and make it easy to add new tools later.
-- **Design for extensibility:** Make TaskQueue/TaskDetail generic and pluggable. Each new tool should be a new task type, easy to add/test.
-- **After auto-recon works, add more tools:** ffuf, wpscan, amass, searchsploit, etc. can be added as new tasks.
+- **Move into Phase 3 now:** Your core is strong and tested. Focus on making each tool easy to use, robust, and flexible for user-driven workflows. Validate your architecture and make it easy to add new tools later.
+- **Design for extensibility:** Make each tool wrapper generic and pluggable. Each new tool should be easy to add/test.
+- **After Phase 3, add more tools:** ffuf, wpscan, amass, searchsploit, etc. can be added as new modules.
 - **Focus on user experience:** Keep the AI guidance clear, actionable, and educational. Make the CLI and reports beautiful and motivating.
-- **Gather feedback early:** Once auto-recon is working, get user feedback to guide Phase 4/4.5 priorities.
+- **Gather feedback early:** Once the new workflow is working, get user feedback to guide Phase 4/4.5 priorities.
 
 **Things You Could Add (Future):**
 - More tool integrations (ffuf, wpscan, amass, nuclei, etc.)
-- Plugin/task registration system for community-contributed modules
+- Plugin/module registration system for community-contributed modules
 - More advanced reporting (Markdown, HTML, PDF)
 - Interactive learning/hint modules
 - Pro mode with advanced chaining, custom task graphs

@@ -311,10 +311,9 @@ class SessionController:
 
         if not self.chat_history:
             # Construct initial message that includes target information for the AI's first turn.
-            # The AGENT_SYSTEM_PROMPT guides it to check for HTTP first.
             initial_user_msg = (
                 f"Initiate reconnaissance for primary target coordinates: {self.current_target}. "
-                "I am a beginner Earthling specimen. Please analyze any initial web presence and then propose broader scans like Nmap if needed."
+                "Start with a fast Nmap scan using -Pn to check the top 1000 TCP ports (Nmap default), since CTF targets often block ping/ICMP and most services are on common ports. Only suggest service/version detection or web/content enumeration after open ports are found. Please propose the first Nmap scan as a tool call, not just a question."
             )
             self.chat_history.append({"role": "user", "content": initial_user_msg})
             ai_response = self._get_llm_response_from_agent()
@@ -478,83 +477,156 @@ class SessionController:
             tool_name_llm.replace("propose_", "").replace("_", " ").title(),
         )
 
-        self.console.rule(
-            f"[bold yellow]Decision Point: {display_name} Proposal[/bold yellow]"
-        )
-
-        # Display arguments based on tool type
-        if tool_name_llm == "propose_fetch_web_content":
-            self.console.print(
-                f"  [dim]URL to Fetch:[/dim] [cyan]{tool_args.get('url_to_fetch', 'N/A')}[/cyan]"
+        def show_args(args):
+            self.console.rule(
+                f"[bold yellow]Decision Point: {display_name} Proposal[/bold yellow]"
             )
-        else:  # For other tools that typically have a 'target'
-            display_target = tool_args.get("target", self.current_target)
-            self.console.print(f"  [dim]Target:[/dim] [cyan]{display_target}[/cyan]")
-
-            if tool_name_llm == "propose_nmap_scan":
+            if tool_name_llm == "propose_fetch_web_content":
                 self.console.print(
-                    f"  [dim]Nmap Args:[/dim] {tool_args.get('arguments', 'N/A')}"
+                    f"URL to Fetch: {args.get('url_to_fetch', 'N/A')}", markup=False
                 )
-            elif tool_name_llm == "propose_gobuster_scan":
-                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-                wl = tool_args.get("wordlist") or DEFAULT_WORDLIST
-                self.console.print(
-                    f"  [dim]Wordlist:[/dim] {os.path.basename(wl) if wl else 'Default/Not Set'}"
-                )
-                sc = tool_args.get("status_codes")
-                if sc:
-                    self.console.print(f"  [dim]Status Codes:[/dim] {sc}")
-            elif tool_name_llm == "propose_nikto_scan":
-                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-                na = tool_args.get("nikto_arguments")
-                if na:
-                    self.console.print(f"  [dim]Nikto Args:[/dim] {na}")
-            elif tool_name_llm == "propose_smb_enum":
-                ea = tool_args.get("enum_arguments")
-                if ea:
-                    self.console.print(f"  [dim]Enum4Linux Args:[/dim] {ea}")
-            elif tool_name_llm == "propose_hydra_bruteforce":
-                self.console.print(f"  [dim]Port:[/dim] {tool_args.get('port', 'N/A')}")
-                self.console.print(
-                    f"  [dim]Service:[/dim] {tool_args.get('service_protocol', 'N/A')}"
-                )
-                self.console.print(
-                    f"  [dim]Username:[/dim] {tool_args.get('username', 'N/A')}"
-                )
-                pwl = tool_args.get("password_list") or DEFAULT_PASSWORD_LIST
-                self.console.print(
-                    f"  [dim]Password List:[/dim] {os.path.basename(pwl) if pwl else 'Default/Not Set'}"
-                )
-                if tool_args.get("path"):
-                    self.console.print(f"  [dim]Path:[/dim] {tool_args.get('path')}")
-                if tool_args.get("threads"):
+            else:
+                display_target = args.get("target", self.current_target)
+                self.console.print(f"Target: {display_target}", markup=False)
+                if tool_name_llm == "propose_nmap_scan":
                     self.console.print(
-                        f"  [dim]Threads:[/dim] {tool_args.get('threads')}"
+                        f"Nmap Args: {args.get('arguments', 'N/A')}", markup=False
                     )
-                if tool_args.get("hydra_options"):
+                elif tool_name_llm == "propose_gobuster_scan":
+                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
+                    wl = args.get("wordlist") or DEFAULT_WORDLIST
                     self.console.print(
-                        f"  [dim]Other Hydra Opts:[/dim] {tool_args.get('hydra_options')}"
+                        f"Wordlist: {wl if wl else 'Default/Not Set'}", markup=False
                     )
+                    sc = args.get("status_codes")
+                    if sc:
+                        self.console.print(f"Status Codes: {sc}", markup=False)
+                elif tool_name_llm == "propose_nikto_scan":
+                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
+                    na = args.get("nikto_arguments")
+                    if na:
+                        self.console.print(f"Nikto Args: {na}", markup=False)
+                elif tool_name_llm == "propose_smb_enum":
+                    ea = args.get("enum_arguments")
+                    if ea:
+                        self.console.print(f"Enum4Linux Args: {ea}", markup=False)
+                elif tool_name_llm == "propose_hydra_bruteforce":
+                    self.console.print(f"Port: {args.get('port', 'N/A')}", markup=False)
+                    self.console.print(
+                        f"Service: {args.get('service_protocol', 'N/A')}", markup=False
+                    )
+                    self.console.print(
+                        f"Username: {args.get('username', 'N/A')}", markup=False
+                    )
+                    pwl = args.get("password_list") or DEFAULT_PASSWORD_LIST
+                    self.console.print(
+                        f"Password List: {pwl if pwl else 'Default/Not Set'}",
+                        markup=False,
+                    )
+                    if args.get("path"):
+                        self.console.print(f"Path: {args.get('path')}", markup=False)
+                    if args.get("threads"):
+                        self.console.print(
+                            f"Threads: {args.get('threads')}", markup=False
+                        )
+                    if args.get("hydra_options"):
+                        self.console.print(
+                            f"Other Hydra Opts: {args.get('hydra_options')}",
+                            markup=False,
+                        )
+            self.console.rule()
 
-        self.console.rule()
+        # Define full argument sets and defaults for each tool
+        tool_arg_defaults = {}
+        if tool_name_llm == "propose_nmap_scan":
+            tool_arg_defaults = {
+                "target": self.current_target or "",
+                "arguments": "-sV -T4",
+            }
+        elif tool_name_llm == "propose_gobuster_scan":
+            tool_arg_defaults = {
+                "target": self.current_target or "",
+                "port": 80,
+                "wordlist": DEFAULT_WORDLIST
+                or "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt",
+                "status_codes": "200,201,204,301,302,307,401,403",
+            }
+        elif tool_name_llm == "propose_nikto_scan":
+            tool_arg_defaults = {
+                "target": self.current_target or "",
+                "port": 80,
+                "nikto_arguments": "",
+            }
+        elif tool_name_llm == "propose_smb_enum":
+            tool_arg_defaults = {
+                "target": self.current_target or "",
+                "enum_arguments": "-A",
+            }
+        elif tool_name_llm == "propose_hydra_bruteforce":
+            tool_arg_defaults = {
+                "target": self.current_target or "",
+                "port": 22,
+                "service_protocol": "ssh",
+                "username": "",
+                "password_list": DEFAULT_PASSWORD_LIST or "",
+                "path": "",
+                "threads": 4,
+                "hydra_options": "",
+            }
+        elif tool_name_llm == "propose_fetch_web_content":
+            tool_arg_defaults = {
+                "url_to_fetch": "http://" + (self.current_target or "") + "/",
+            }
+        # Merge tool call args with defaults (tool call args take precedence)
+        current_args = {**tool_arg_defaults, **tool_args}
 
-        if self.is_novice_mode:
-            # For fetching web content, if it's just for AI context, maybe auto-confirm or make it less prominent?
-            # For now, keep confirmation for all tools in novice mode.
-            confirmation = (
-                self.console.input("  Proceed with this action? (yes/no): ")
-                .lower()
-                .strip()
-            )
-            confirmed = confirmation in ["yes", "y"]
-            if not confirmed:
-                logger.info(f"User declined tool: {display_name} (Args: {tool_args})")
-            return confirmed
-        else:
+        # Interactive loop for edit/confirm/skip/quit
+        while True:
+            show_args(current_args)
+            # Use markup for the action prompt so [bold] tags render, but keep markup=False for user-editable values
             self.console.print(
-                "  [italic green]Proceeding in Expert mode (auto-confirming)...[/italic green]"
+                "[bold][E][/bold]dit  [bold][C][/bold]onfirm  [bold][S][/bold]kip  [bold][Q][/bold]uit session"
             )
-            return True
+            choice = self.console.input("  Your choice: ").strip().lower()
+            if choice in ["c", "confirm"]:
+                return True
+            elif choice in ["s", "skip"]:
+                logger.info(f"User skipped tool: {display_name} (Args: {current_args})")
+                self._send_tool_cancellation_to_llm(
+                    self.pending_tool_call.id, tool_name_llm
+                )
+                self.pending_tool_call = None
+                return False
+            elif choice in ["q", "quit"]:
+                self.console.print(
+                    "[bold magenta]Ending reconnaissance with Alien Recon.[/bold magenta]",
+                    markup=False,
+                )
+                exit(0)
+            elif choice in ["e", "edit"]:
+                # Prompt for each argument
+                for k, v in current_args.items():
+                    prompt = f"  Edit '{k}' [{v}]: "
+                    new_val = self.console.input(prompt, markup=False)
+                    if new_val.strip() != "":
+                        # Try to cast to int if original was int
+                        if isinstance(v, int):
+                            try:
+                                current_args[k] = int(new_val)
+                            except Exception:
+                                current_args[k] = new_val
+                        else:
+                            current_args[k] = new_val
+                self.console.print("[green]Arguments updated.[/green]", markup=False)
+                # Update the pending_tool_call's arguments for execution
+                self.pending_tool_call.function.arguments = json.dumps(current_args)
+                continue
+            else:
+                self.console.print(
+                    "[yellow]Invalid choice. Please enter E, C, S, or Q.[/yellow]",
+                    markup=False,
+                )
+                continue
 
     def _send_tool_cancellation_to_llm(self, tool_call_id: str, function_name: str):
         if not tool_call_id or not function_name:
@@ -705,6 +777,10 @@ class SessionController:
                 final_tool_args_for_execution["target_ip"] = (
                     final_tool_args_for_execution.pop("target")
                 )
+            # Add this block to set ignore_cert_errors for HTTPS ports
+            port = final_tool_args_for_execution.get("port", 80)
+            if int(port) in [443, 8443]:
+                final_tool_args_for_execution["ignore_cert_errors"] = True
         elif tool_name_llm == "propose_nikto_scan":
             tool_instance = self.nikto_tool
         elif tool_name_llm == "propose_smb_enum":
@@ -776,17 +852,51 @@ class SessionController:
         ai_follow_up_response = self._get_llm_response_from_agent()
         self._process_llm_message(ai_follow_up_response)
 
-    def start_auto_recon(self):
-        if not self.current_target:
-            self.console.print(
-                "[bold red]Error: No target set for auto-reconnaissance.[/bold red]"
-            )
+    def run_task(self, task):
+        # Dispatch to the correct tool and run it
+        tool_map = {
+            "nmap": self.nmap_tool,
+            "gobuster": self.gobuster_tool,
+            "nikto": self.nikto_tool,
+            "smb_enum": self.smb_tool,
+            "hydra": self.hydra_tool,
+            "http_page_fetcher": self.http_fetcher_tool,
+        }
+        tool = tool_map.get(task.tool_name)
+        if not tool:
+            self.console.print(f"[red]Tool {task.tool_name} not found![/red]")
             return
+        self.console.print(f"[cyan]Running {task.tool_name} on {task.target}...[/cyan]")
+        if task.tool_name == "gobuster":
+            kwargs = {"target_ip": task.target}
+            if getattr(task, "port", None) in [443, 8443]:
+                kwargs["ignore_cert_errors"] = True
+        else:
+            kwargs = {"target": task.target}
+        if task.arguments:
+            kwargs["arguments"] = task.arguments
+        if task.port:
+            kwargs["port"] = task.port
+        if task.wordlist:
+            kwargs["wordlist"] = task.wordlist
+        result = tool.execute(**kwargs)
         self.console.print(
-            f"[italic blue]Starting [bold]automated[/bold] reconnaissance for target: "
-            f"{self.current_target}[/italic blue]"
+            f"[green]{task.tool_name} result:[/green] {result['scan_summary']}"
         )
-        self.console.print(
-            "[grey50](Auto-recon is a planned feature and not yet implemented.)[/grey50]"
-        )
-        logger.info(f"Auto-recon attempt for {self.current_target} (not implemented).")
+        # Print findings for all tools, not just Nmap
+        findings = result.get("findings")
+        if findings:
+            from pprint import pformat
+
+            self.console.print("[bold yellow]Findings:[/bold yellow]")
+            self.console.print(pformat(findings))
+        # Print raw_stdout/raw_stderr if error is present
+        if result.get("status") == "failure" or result.get("error"):
+            if result.get("raw_stdout"):
+                self.console.print("[dim]Raw stdout:[/dim]")
+                self.console.print(result["raw_stdout"])
+            if result.get("raw_stderr"):
+                self.console.print("[dim]Raw stderr:[/dim]")
+                self.console.print(result["raw_stderr"])
+        if task.post_hook:
+            task.post_hook(result)

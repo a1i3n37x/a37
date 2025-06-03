@@ -199,14 +199,8 @@ def recon(
         "-t",
         help=(
             "Target IP or domain for this reconnaissance session. "
-            "This is currently a mandatory option for the recon command."
+            "If omitted, will use the last saved target from your session."
         ),
-    ),
-    auto: bool = typer.Option(
-        False,
-        "--auto",
-        "-a",
-        help="Enable automatic chained scanning (Planned for Phase 3).",
     ),
     novice_mode: bool = typer.Option(
         True,  # Default to novice mode
@@ -215,36 +209,41 @@ def recon(
     ),
 ):
     """Start reconnaissance on the specified target."""
-    # Logging for this command will use the level set in main_callback
     module_logger.info(
         f"Recon command initiated with target: {target_address}, "
-        f"auto: {auto}, novice_mode: {novice_mode}"
+        f"novice_mode: {novice_mode}"
     )
 
-    if not target_address:
+    # Always load session to get the last saved target if needed
+    sc = SessionController()
+    session_target = sc.get_current_target()
+
+    # If --target is provided, use it and update session
+    if target_address:
+        sc.set_target(target_address)
+        sc.set_novice_mode(novice_mode)
+    # If not provided, use the session target if available
+    elif session_target:
+        target_address = session_target
+        sc.set_novice_mode(novice_mode)
+        cli_console.print(
+            f"[yellow]No --target provided. Using saved session target: [cyan]{target_address}[/cyan][/yellow]"
+        )
+    else:
         cli_console.print(
             "[bold red]Error: Target address is required for reconnaissance. "
-            "Please use the --target <address> option.[/bold red]"
+            "Please set a target with 'alienrecon target <address>' or use --target <address>.[/bold red]"
         )
-        module_logger.error("Recon command called without a target address.")
+        module_logger.error(
+            "Recon command called without a target address and no saved session target."
+        )
         raise typer.Exit(code=1)
 
     try:
-        # Each 'recon' call gets a fresh SessionController for now
-        sc = SessionController()
-        sc.set_target(target_address)
-        sc.set_novice_mode(novice_mode)
-
-        if auto:
-            module_logger.info(
-                f"Starting auto reconnaissance for {sc.get_current_target()}"
-            )
-            sc.start_auto_recon()  # This is currently a stub
-        else:
-            module_logger.info(
-                f"Starting interactive reconnaissance for {sc.get_current_target()}"
-            )
-            sc.start_interactive_recon_session()  # This will contain the main loop
+        module_logger.info(
+            f"Starting interactive reconnaissance for {sc.get_current_target()}"
+        )
+        sc.start_interactive_recon_session()  # This will contain the main loop
 
     except RuntimeError as e:
         cli_console.print(f"[bold red]Session Initialization Error: {e}[/bold red]")

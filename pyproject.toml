@@ -19,6 +19,7 @@ httpx = "^0.27.0"
 click = "<8.2.0"
 requests = "^2.32.3"
 python-nmap = "^0.7.1"
+impacket = "^0.12.0"
 
 [tool.poetry.group.dev.dependencies]
 # Your existing dev dependencies + pytest-cov

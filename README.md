@@ -9,7 +9,7 @@ Born in the void between signal and silence, **a37** leads you from **zero to fi
 
 ## 🧠 What is a37?!
 
-Alien Recon is a modular, CLI-driven recon framework built for **beginner ethical hackers** looking to crush their first boxes — and for pros who don’t have time to type out the same 12 commands every time.
+Alien Recon is a modular, CLI-driven recon framework built for **beginner ethical hackers** looking to crush their first boxes — and for pros who don't have time to type out the same 12 commands every time.
 
 No fluff. No filler. Just pure recon, injected with AI guidance and weaponized enumeration.
 
@@ -18,12 +18,11 @@ No fluff. No filler. Just pure recon, injected with AI guidance and weaponized e
 - 🛠️ Toolchain: `nmap`, `gobuster`, `nikto`, `enum4linux-ng`, `hydra`, `http-fetcher`
 - 🧪 Structured output with clean summaries and full raw logs
 - 🧙 `alienrecon recon <target>` — start scanning and let the AI steer
-- 🧼 `alienrecon doctor` — system checks so your setup doesn’t suck
+- 🧼 `alienrecon doctor` — system checks so your setup doesn't suck
 
 ### 🚀 Upcoming Features
-- 🔁 `--auto` mode with smart task-chaining
 - 🧬 MITRE ATT&CK technique tagging for each recon step
-- 🕷️ Pro Mode: ...
+- 🕷️ Pro Mode: advanced manual chaining and custom workflows
 - 📜 `debrief` generator: full recon summary + attack paths
 
 ---
@@ -61,12 +60,12 @@ alienrecon recon <target-ip> --novice
 
 ## 🧬 Philosophy
 
-Alien Recon isn’t here to baby you. It’s here to **level you up**.
+Alien Recon is now fully modular and user-driven. You choose which tools to run and when, with the AI providing guidance, explanations, and context at every step. No more forced automation—just flexible, educational recon that adapts to your workflow and learning style.
 
-You’ll learn the right sequence, the right questions, and the right instincts — while the AI keeps your signal clean and your ops tight.
+You'll learn the right sequence, the right questions, and the right instincts — while the AI keeps your signal clean and your ops tight.
 
-Because recon isn’t just about ports.
-It’s about **momentum**.
+Because recon isn't just about ports.
+It's about **momentum**.
 
 ---
 
@@ -81,10 +80,10 @@ It’s about **momentum**.
 ## 💀 WARNING
 
 This is an **offensive security** tool built for **legal use only**.
-If you aim this at anything without permission, you’re not a hacker — you’re a liability.
+If you aim this at anything without permission, you're not a hacker — you're a liability.
 
 Use responsibly.
-**Alien37 doesn’t cover court costs.**
+**Alien37 doesn't cover court costs.**
 
 ---
 

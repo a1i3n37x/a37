@@ -114,7 +114,7 @@ class GobusterTool(CommandTool):
             "-s",
             status_codes_to_use,
             "-b",
-            "",  # Don't blacklist any status codes by default with -b
+            "",  # Always pass empty blacklist to show all status codes
             "--no-error",  # Suppress error messages for non-existent paths
         ]
 
@@ -123,8 +123,13 @@ class GobusterTool(CommandTool):
         if extensions:
             command_args.extend(["-x", extensions])
 
+        # Add -k if ignore_cert_errors is True
+        if kwargs.get("ignore_cert_errors"):
+            command_args.append("-k")
+
         logger.debug(f"Using Gobuster wordlist: {wordlist_to_use}")
         logger.debug(f"Built Gobuster command args: {command_args}")
+        print("[DEBUG] Gobuster command:", [self.executable_name] + command_args)
         return command_args
 
     def parse_output(
