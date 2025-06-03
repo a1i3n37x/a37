@@ -1,5 +1,35 @@
 {
   "current_target": "10.10.235.136",
-  "chat_history": [],
-  "is_novice_mode": true
+  "chat_history": [
+    {
+      "role": "user",
+      "content": "Initiate reconnaissance for primary target coordinates: 10.10.235.136. For the first step, please propose an initial Nmap scan using the `nmap_scan` tool. A good initial scan for CTFs would be a SYN scan on the top 1000 TCP ports, explicitly using -Pn as ping is often blocked. So, consider parameters like: `ip` should be the target IP, `scan_type=\"SYN\"`, `top_ports=1000`, and `custom_arguments=\"-Pn\"`. Only suggest service/version detection or other scans after these initial open ports are found. Remember to propose this as a tool call."
+    },
+    {
+      "content": null,
+      "refusal": null,
+      "role": "assistant",
+      "annotations": [],
+      "audio": null,
+      "function_call": null,
+      "tool_calls": [
+        {
+          "id": "call_2Ooo5ldgECXyI49YRydewTuO",
+          "function": {
+            "arguments": "{\"ip\":\"10.10.235.136\",\"scan_type\":\"SYN\",\"top_ports\":1000,\"custom_arguments\":\"-Pn\"}",
+            "name": "nmap_scan"
+          },
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "is_novice_mode": true,
+  "state": {
+    "target_ip": null,
+    "target_hostname": null,
+    "open_ports": [],
+    "discovered_subdomains": [],
+    "web_findings": {}
+  }
 }
