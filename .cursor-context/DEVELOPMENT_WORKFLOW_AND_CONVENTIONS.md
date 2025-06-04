@@ -30,7 +30,7 @@
 
 ## Testing
 -   **Location**: Parser unit tests and fixtures are located in the `tests/` directory, with subdirectories for `fixtures` and `tools` (e.g., `tests/tools/test_nmap.py`).
--   **Fixtures**: Sample raw outputs for tools are stored in `tests/fixtures/` (e.g., `nmap_sample.xml`, `gobuster_sample.txt`).
+-   **Fixtures**: Sample raw outputs for tools are stored in the `tests/fixtures/` directory, with subdirectories for `fixtures` and `tools` (e.g., `nmap_sample.xml`).
 -   **Schema**: All tool parsers must produce results conforming to the `ToolResult` TypedDict schema defined in `src/alienrecon/core/types.py`.
 -   **Coverage**: Aim for >80% test coverage for parsers, including success, failure, and edge cases.
 

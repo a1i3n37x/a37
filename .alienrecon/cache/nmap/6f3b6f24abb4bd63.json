@@ -1,0 +1,50 @@
+{
+  "timestamp": 1749001538.1717029,
+  "ttl": 3600,
+  "tool_name": "nmap",
+  "args": {
+    "ip": "10.10.61.3",
+    "ports": "80,443",
+    "top_ports": 1000,
+    "scan_type": "SYN",
+    "service_detection": false,
+    "os_detection": false,
+    "run_scripts": null,
+    "timing_template": "T4",
+    "custom_arguments": "-Pn"
+  },
+  "result": {
+    "tool": "nmap",
+    "mode": "SYN",
+    "status": "success",
+    "findings": {
+      "scan_summary": "Nmap scan results for 10.10.61.3 (parsed via python-nmap):",
+      "hosts": [
+        {
+          "host": "10.10.61.3",
+          "hostname": "futurevera.thm",
+          "status": "up",
+          "open_ports": [
+            {
+              "port": 80,
+              "protocol": "tcp",
+              "service": "http",
+              "version": "N/A"
+            },
+            {
+              "port": 443,
+              "protocol": "tcp",
+              "service": "https",
+              "version": "N/A"
+            }
+          ]
+        }
+      ],
+      "scan_arguments_used": "/usr/lib/nmap/nmap --privileged -sS -p 80,443 -T4 -Pn -oX - 10.10.61.3"
+    },
+    "scan_summary": "Nmap scan results for 10.10.61.3:",
+    "command_used": "nmap -sS -p 80,443 -T4 -Pn 10.10.61.3 -oX -",
+    "raw_output": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE nmaprun>\n<?xml-stylesheet href=\"file:///usr/share/nmap/nmap.xsl\" type=\"text/xsl\"?>\n<!-- Nmap 7.95 scan initiated Tue Jun  3 21:45:37 2025 as: /usr/lib/nmap/nmap -&#45;privileged -sS -p 80,443 -T4 -Pn -oX - 10.10.61.3 -->\n<nmaprun scanner=\"nmap\" args=\"/usr/lib/nmap/nmap -&#45;privileged -sS -p 80,443 -T4 -Pn -oX - 10.10.61.3\" start=\"1749001537\" startstr=\"Tue Jun  3 21:45:37 2025\" version=\"7.95\" xmloutputversion=\"1.05\">\n<scaninfo type=\"syn\" protocol=\"tcp\" numservices=\"2\" services=\"80,443\"/>\n<verbose level=\"0\"/>\n<debugging level=\"0\"/>\n<host starttime=\"1749001537\" endtime=\"1749001538\"><status state=\"up\" reason=\"user-set\" reason_ttl=\"0\"/>\n<address addr=\"10.10.61.3\" addrtype=\"ipv4\"/>\n<hostnames>\n<hostname name=\"futurevera.thm\" type=\"PTR\"/>\n</hostnames>\n<ports><port protocol=\"tcp\" portid=\"80\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"61\"/><service name=\"http\" method=\"table\" conf=\"3\"/></port>\n<port protocol=\"tcp\" portid=\"443\"><state state=\"open\" reason=\"syn-ack\" reason_ttl=\"61\"/><service name=\"https\" method=\"table\" conf=\"3\"/></port>\n</ports>\n<times srtt=\"209732\" rttvar=\"157321\" to=\"839016\"/>\n</host>\n<runstats><finished time=\"1749001538\" timestr=\"Tue Jun  3 21:45:38 2025\" summary=\"Nmap done at Tue Jun  3 21:45:38 2025; 1 IP address (1 host up) scanned in 0.31 seconds\" elapsed=\"0.31\" exit=\"success\"/><hosts up=\"1\" down=\"0\" total=\"1\"/>\n</runstats>\n</nmaprun>",
+    "error": null
+  }
+}

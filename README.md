@@ -24,7 +24,7 @@ Just pure, weaponized enumeration with AI in your corner like a rogue sysadmin f
 
 - 🧠 **AI in the loop:** Think of it like having a recon-savvy warlock on comms
 - 🛠️ Pre-wired tools:
-  `nmap`, `gobuster`, `nikto`, `enum4linux-ng`, `hydra`, `http-fetcher`
+  `nmap`, `nikto`, `enum4linux-ng`, `hydra`, `http-fetcher`
 - 🧪 Structured JSON output + full raw logs (no black boxes)
 - 🧙 One-liner flow:
   `alienrecon recon <target>`
@@ -65,14 +65,14 @@ alienrecon
 
 You can then type commands like:
 - "Scan 10.10.10.10 with nmap"
-- "Run gobuster on the web server"
+- "Run directory enumeration on the web server"
 - "What do these results mean?"
 
 The assistant will guide you, run tools, explain results, and manage your recon session.
 
 ### Advanced: Manual Tool Subcommands
 
-You can run tools directly (e.g., `alienrecon nmap ...`), but this bypasses the assistant and session features. Results are managed, but you lose conversational AI guidance. This mode is for advanced/manual use only.
+- You can run tools directly using the `manual` subgroup (e.g., `alienrecon manual nmap ...`), but this bypasses the assistant and session features. Results are managed, but you lose conversational AI guidance. This mode is for advanced/manual use only.
 
 ---
 

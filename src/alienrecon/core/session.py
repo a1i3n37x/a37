@@ -1,4 +1,5 @@
 # src/alienrecon/core/session.py
+import asyncio
 import json
 import logging
 import os
@@ -18,7 +19,6 @@ from rich.panel import Panel
 from rich.spinner import Spinner
 
 # Tool imports
-from ..tools.gobuster import GobusterTool
 from ..tools.http_fetcher import HttpPageFetcherTool  # ADDED
 from ..tools.hydra import HydraTool
 
@@ -27,6 +27,7 @@ from ..tools.llm_functions import LLM_TOOL_FUNCTIONS
 from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
 from ..tools.smb import SmbTool
+from ..tools.ssl_inspector import SSLInspectorTool
 from .agent import (
     AGENT_SYSTEM_PROMPT,
     AGENT_WELCOME_MESSAGE,
@@ -35,7 +36,6 @@ from .agent import (
 )
 from .config import (
     DEFAULT_PASSWORD_LIST,
-    DEFAULT_WORDLIST,
     initialize_openai_client,
 )
 
@@ -72,11 +72,11 @@ class SessionController:
         }
 
         self.nmap_tool: Optional[NmapTool] = None
-        self.gobuster_tool: Optional[GobusterTool] = None
         self.nikto_tool: Optional[NiktoTool] = None
         self.smb_tool: Optional[SmbTool] = None
         self.hydra_tool: Optional[HydraTool] = None
         self.http_fetcher_tool: Optional[HttpPageFetcherTool] = None  # ADDED
+        self.ssl_inspector_tool: Optional[SSLInspectorTool] = None
         self._initialize_tools()
 
         # Try to load session state if it exists
@@ -89,10 +89,10 @@ class SessionController:
         # For tools that are classes derived from CommandTool
         command_tool_classes = {
             "nmap_tool": NmapTool,
-            "gobuster_tool": GobusterTool,
             "nikto_tool": NiktoTool,
             "smb_tool": SmbTool,
             "hydra_tool": HydraTool,
+            "ssl_inspector_tool": SSLInspectorTool,
         }
         for attr_name, tool_class in command_tool_classes.items():
             try:
@@ -145,8 +145,6 @@ class SessionController:
         tool_status = []
         if self.nmap_tool:
             tool_status.append("[bold blue]Nmap[/bold blue] 🛰️")
-        if self.gobuster_tool:
-            tool_status.append("[bold yellow]Gobuster[/bold yellow] 🚪")
         if self.nikto_tool:
             tool_status.append("[bold red]Nikto[/bold red] 🦠")
         if self.smb_tool:
@@ -155,14 +153,12 @@ class SessionController:
             tool_status.append("[bold green]Hydra[/bold green] 🐍")
         if self.http_fetcher_tool:
             tool_status.append("[bold cyan]HTTP Fetcher[/bold cyan] 🌐")
+        if self.ssl_inspector_tool:
+            tool_status.append("[bold yellow]SSL Inspector[/bold yellow] 🔒")
         status_lines.append(
             "[bold]🛠️ Tools Online:[/bold] "
             + (", ".join(tool_status) if tool_status else "[red]None[/red]")
         )
-        if DEFAULT_WORDLIST:
-            status_lines.append(
-                f"[bold]📖 Gobuster Wordlist:[/bold] [bold white]{os.path.basename(DEFAULT_WORDLIST)}[/bold white]"
-            )
         if DEFAULT_PASSWORD_LIST:
             status_lines.append(
                 f"[bold]🔑 Hydra Password List:[/bold] [bold white]{os.path.basename(DEFAULT_PASSWORD_LIST)}[/bold white]"
@@ -334,7 +330,7 @@ class SessionController:
         pro_tips = [
             "[bold cyan]Alien Intel:[/bold cyan] Use [bold]Nmap[/bold] with -sV to detect service versions for more targeted attacks!",
             "[bold cyan]Alien Intel:[/bold cyan] Check robots.txt and .git/ directories for hidden clues on web servers.",
-            "[bold cyan]Alien Intel:[/bold cyan] Use [bold]Gobuster[/bold] with different wordlists for deeper directory brute-forcing.",
+            "[bold cyan]Alien Intel:[/bold cyan] Use [bold]ffuf[/bold] with different wordlists for deeper directory brute-forcing.",
             "[bold cyan]Alien Intel:[/bold cyan] Look for usernames in HTML comments and error messages!",
             "[bold cyan]Alien Intel:[/bold cyan] Hydra is powerful, but always check for account lockout policies first.",
             "[bold cyan]Alien Intel:[/bold cyan] [bold]SMB shares[/bold] can leak sensitive files—enumerate thoroughly!",
@@ -570,23 +566,102 @@ class SessionController:
 
         if ai_message.tool_calls:
             tool_calls_to_process = list(ai_message.tool_calls)
+            confirmed_tool_calls = []
+
+            # First, confirm all tool calls
             for tool_call in tool_calls_to_process:
-                self.pending_tool_call = tool_call  # Set current tool_call for _confirm_tool_proposal and execution
+                self.pending_tool_call = (
+                    tool_call  # Set current tool_call for _confirm_tool_proposal
+                )
 
                 if self._confirm_tool_proposal():  # This shows [E]dit [C]onfirm prompt
-                    if (
-                        not self._execute_single_tool_call_and_update_history()
-                    ):  # Returns True on success, False on tool exec error
-                        # Error message already added to history by the new function
-                        # Still must append a tool message for every tool call
-                        continue  # Continue to process all tool calls
+                    confirmed_tool_calls.append(tool_call)
                 else:
                     # User cancelled the tool proposal
                     self._send_tool_cancellation_to_llm(
                         tool_call.id, tool_call.function.name
                     )
-                    # Still must append a tool message for every tool call
-                    continue  # Continue to process all tool calls
+
+            # If multiple tools confirmed, offer parallel execution
+            if len(confirmed_tool_calls) > 1:
+                from .parallel_executor import ParallelExecutor
+
+                executor = ParallelExecutor(self.console)
+
+                # Prepare tool calls data
+                tool_calls_data = []
+                for tool_call in confirmed_tool_calls:
+                    tool_info = LLM_TOOL_FUNCTIONS.get(tool_call.function.name, {})
+                    display_name = tool_info.get(
+                        "description", tool_call.function.name
+                    ).split(".")[0]
+                    tool_calls_data.append(
+                        (
+                            tool_call.id,
+                            tool_call.function.name,
+                            display_name,
+                            json.loads(tool_call.function.arguments or "{}"),
+                        )
+                    )
+
+                if executor.should_run_parallel(tool_calls_data):
+                    self.console.print(
+                        f"\n[cyan]Multiple tools confirmed ({len(confirmed_tool_calls)} tools).[/cyan]"
+                    )
+                    self.console.print(
+                        "Would you like to run them in parallel for faster results?"
+                    )
+                    choice = (
+                        self.console.input("[bold][P]arallel  [S]equential:[/bold] ")
+                        .strip()
+                        .lower()
+                    )
+
+                    if choice in ["p", "parallel"]:
+                        # Execute in parallel
+                        self.console.print(
+                            "[green]Running tools in parallel...[/green]\n"
+                        )
+
+                        # Run tools in parallel
+                        results = asyncio.run(
+                            executor.execute_tools_parallel(tool_calls_data)
+                        )
+
+                        # Display results
+                        executor.display_parallel_results(results)
+
+                        # Add results to chat history
+                        for result_info in results:
+                            self.chat_history.append(
+                                {
+                                    "tool_call_id": result_info["tool_call_id"],
+                                    "role": "tool",
+                                    "name": result_info["function_name"],
+                                    "content": json.dumps(result_info["result"]),
+                                }
+                            )
+
+                        self.save_session()
+                        executor.cleanup()
+                    else:
+                        # Sequential execution
+                        for tool_call in confirmed_tool_calls:
+                            self.pending_tool_call = tool_call
+                            if not self._execute_single_tool_call_and_update_history():
+                                continue
+                else:
+                    # Not suitable for parallel, run sequentially
+                    for tool_call in confirmed_tool_calls:
+                        self.pending_tool_call = tool_call
+                        if not self._execute_single_tool_call_and_update_history():
+                            continue
+            else:
+                # Single tool or no confirmed tools
+                for tool_call in confirmed_tool_calls:
+                    self.pending_tool_call = tool_call
+                    if not self._execute_single_tool_call_and_update_history():
+                        continue
 
             self.pending_tool_call = None  # Clear pending call after the loop
 
@@ -664,6 +739,22 @@ class SessionController:
                     f"  [bold]{param_name}[/bold] ({description}): [cyan]{display_value}[/cyan] {value_source}",
                     markup=True,
                 )
+
+            # If this is an FFUF directory enumeration, show derived port
+            if tool_name_llm == "ffuf_dir_enum":
+                try:
+                    from urllib.parse import urlparse
+
+                    parsed = urlparse(current_tool_args.get("url", ""))
+                    derived_port = parsed.port or (
+                        443 if parsed.scheme == "https" else 80
+                    )
+                    self.console.print(
+                        f"  [bold]port[/bold] (derived from URL): [cyan]{derived_port}[/cyan] (derived)",
+                        markup=True,
+                    )
+                except Exception:
+                    pass
             self.console.rule()
 
         # Prepare current arguments by merging defaults with LLM-provided args
@@ -911,40 +1002,68 @@ class SessionController:
             )
             # This indicates a problem with the tool's returned structure, but we still add it to history.
 
+        # Check if result was from cache
+        from_cache = isinstance(tool_output_dict, dict) and tool_output_dict.get(
+            "_from_cache", False
+        )
+
+        # Display cache indicator if result was cached
+        if from_cache:
+            self.console.print(
+                "[dim italic]🔄 Using cached result. Run 'alienrecon cache clear' to force fresh scans.[/dim italic]"
+            )
+
+        # Remove cache metadata from display
+        display_dict = (
+            tool_output_dict.copy()
+            if isinstance(tool_output_dict, dict)
+            else tool_output_dict
+        )
+        if isinstance(display_dict, dict) and "_from_cache" in display_dict:
+            display_dict.pop("_from_cache")
+
         # Display tool output/summary to user
-        if tool_output_dict.get("status") == "failure":
+        cache_indicator = " [green](CACHED)[/green]" if from_cache else ""
+
+        if display_dict.get("status") == "failure":
             self.console.print(
                 Panel(
-                    f"[bold red]Error from {function_name}:[/bold red]\\n{tool_output_dict.get('error', 'Unknown error')}",
-                    title="Tool Execution Failed",
+                    f"[bold red]Error from {function_name}:[/bold red]\\n{display_dict.get('error', 'Unknown error')}",
+                    title=f"Tool Execution Failed{cache_indicator}",
                     border_style="red",
                 )
             )
         elif (
-            "scan_summary" in tool_output_dict and tool_output_dict["scan_summary"]
+            "scan_summary" in display_dict and display_dict["scan_summary"]
         ):  # For tools that provide a summary
             self.console.print(
                 Panel(
                     Markdown(
-                        tool_output_dict["scan_summary"]
+                        display_dict["scan_summary"]
                     ),  # Render summary as Markdown
-                    title=f"Tool Results: {function_name}",
+                    title=f"Tool Results: {function_name}{cache_indicator}",
                     border_style="green",
                 )
             )
-        elif "findings" in tool_output_dict:  # Generic display for other tools
+        elif "findings" in display_dict:  # Generic display for other tools
             self.console.print(
                 Panel(
-                    json.dumps(tool_output_dict.get("findings"), indent=2),
-                    title=f"Tool Results: {function_name}",
+                    json.dumps(display_dict.get("findings"), indent=2),
+                    title=f"Tool Results: {function_name}{cache_indicator}",
                     border_style="green",
                 )
             )
         else:  # Fallback if no clear summary or findings
+            # Re-serialize without cache metadata
+            clean_json_str = (
+                json.dumps(display_dict)
+                if isinstance(display_dict, dict)
+                else tool_output_json_str
+            )
             self.console.print(
                 Panel(
-                    tool_output_json_str,
-                    title=f"Raw Tool Output: {function_name}",
+                    clean_json_str,
+                    title=f"Raw Tool Output: {function_name}{cache_indicator}",
                     border_style="yellow",
                 )
             )
@@ -969,7 +1088,6 @@ class SessionController:
         # Dispatch to the correct tool and run it
         tool_map = {
             "nmap": self.nmap_tool,
-            "gobuster": self.gobuster_tool,
             "nikto": self.nikto_tool,
             "smb_enum": self.smb_tool,
             "hydra": self.hydra_tool,
@@ -980,12 +1098,7 @@ class SessionController:
             self.console.print(f"[red]Tool {task.tool_name} not found![/red]")
             return
         self.console.print(f"[cyan]Running {task.tool_name} on {task.target}...[/cyan]")
-        if task.tool_name == "gobuster":
-            kwargs = {"target_ip": task.target}
-            if getattr(task, "port", None) in [443, 8443]:
-                kwargs["ignore_cert_errors"] = True
-        else:
-            kwargs = {"target": task.target}
+        kwargs = {"target": task.target}
         if task.arguments:
             kwargs["arguments"] = task.arguments
         if task.port:

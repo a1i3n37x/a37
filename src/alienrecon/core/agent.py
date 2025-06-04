@@ -50,11 +50,22 @@ Be conversational and interactive, but also **concise and directive when guiding
 the next step.** Explain *why* a step is taken briefly.
 Do not perform any actions yourself beyond analysis and suggestions. **WHEN you determine a specific scan or action is the logical next step based on the current context and findings, you MUST use the available 'tools' (function calls) to propose this action, but always wait for the user's confirmation or selection before proceeding.**
 
+**IMPORTANT - Parallel Execution Optimization:**
+- When multiple similar scans make sense (e.g., running the same tool on different ports/services), propose them ALL AT ONCE in a single response.
+- If you find multiple web services (e.g., HTTP on port 80 AND HTTPS on port 443), propose directory enumeration for BOTH simultaneously.
+- When comprehensive enumeration is needed, propose multiple complementary tools together (e.g., ffuf_dir_enum + nikto_scan + ffuf_vhost_enum for web services).
+- Examples of when to propose multiple tools:
+  * Multiple web ports open → Propose ffuf for each port in one response
+  * Web service found → Propose directory enum + vulnerability scan + vhost enum together
+  * Multiple services → Propose appropriate enumeration for each service simultaneously
+- The user's system supports parallel execution, so proposing multiple tools improves efficiency.
+- Always explain that these tools can run simultaneously for faster results.
+
 **Manual, User-Driven Workflow Instructions:**
 - Always present actionable options to the user after summarizing findings.
 - Let the user choose which tool or path to pursue next. Do not chain or automate multiple steps without explicit user input.
 - For each tool, provide a brief explanation of what it does and why it is relevant before proposing its use.
-- When proposing a tool action, use the appropriate tool call, but do not proceed until the user confirms or selects that action.
+- When proposing tool actions, consider if multiple tools make sense and propose them together when appropriate.
 - If the user asks for recommendations, present clear, numbered options based on the current findings and context.
 - If the user wants to edit tool arguments or settings, guide them through the available options.
 - Always prioritize education, clarity, and user control over automation.
@@ -62,6 +73,9 @@ Do not perform any actions yourself beyond analysis and suggestions. **WHEN you 
 **Standard CTF Recon Flow:**
 - Unless the user requests otherwise, always begin with a fast Nmap scan using the `nmap_scan` function. For an initial scan, good parameters would be `scan_type="SYN"`, `top_ports=1000` (to quickly check common TCP ports), and consider adding `custom_arguments="-Pn"` if ping is likely blocked (common in CTFs). This helps quickly identify open TCP ports.
 - After identifying open ports from this initial `nmap_scan`, suggest a more detailed follow-up scan using `nmap_scan` again, this time perhaps with `service_detection=True` and targeting the specific open ports found (e.g., `ports="22,80,443"`). You might also consider `os_detection=True` or `run_scripts=True` (for default scripts) at this stage if appropriate.
+- When web services are found on multiple ports, propose enumeration for ALL ports simultaneously.
+- If any web service uses HTTPS (port 443 or 8443), include virtual-host enumeration (e.g., `ffuf_vhost_enum`) alongside directory and vulnerability scans.
+- After discovering virtual hosts, propose directory enumeration or content fetching for each new vhost domain.
 - Only move to web content fetching or other service-specific enumeration after these initial Nmap steps have identified relevant services, unless the user explicitly requests otherwise.
 - For the very first step, always propose an appropriate `nmap_scan` as a tool call, not just a question or suggestion.
 
@@ -142,7 +156,7 @@ for func_name, func_details in LLM_TOOL_FUNCTIONS.items():
 #             "name": "propose_fetch_web_content",
 #             "description": (
 #                 "Proposes to fetch and analyze the HTML/text content of a specific web page "
-#                 "(e.g., an index page or an interesting path found by Gobuster). "
+#                 "(e.g., an index page or an interesting path found by ffuf). "
 #                 "This is used to gather context for the LLM to analyze for clues like usernames, comments, or technologies."
 #             ),
 #             "parameters": {
@@ -162,6 +176,51 @@ for func_name, func_details in LLM_TOOL_FUNCTIONS.items():
 
 
 # --- LLM Interaction ---
+def validate_and_fix_history(history):
+    """
+    Validate and fix the conversation history to ensure it meets OpenAI API requirements.
+
+    Rule: messages with role 'tool' must be a response to a preceding message with 'tool_calls'.
+    """
+    fixed_history = []
+    i = 0
+
+    while i < len(history):
+        message = history[i]
+
+        # If it's a tool message, check if the previous message has tool_calls
+        if message.get("role") == "tool":
+            # Find the corresponding assistant message with tool_calls
+            tool_call_id = message.get("tool_call_id")
+
+            # Look backward for an assistant message with matching tool_call
+            found_matching_assistant = False
+            for j in range(len(fixed_history) - 1, -1, -1):
+                prev_msg = fixed_history[j]
+                if prev_msg.get("role") == "assistant" and prev_msg.get("tool_calls"):
+                    # Check if this tool_call_id matches any in the assistant message
+                    for tool_call in prev_msg.get("tool_calls", []):
+                        if tool_call.get("id") == tool_call_id:
+                            found_matching_assistant = True
+                            break
+                    if found_matching_assistant:
+                        break
+
+            # If no matching assistant message found, skip this tool message
+            if not found_matching_assistant:
+                logging.warning(
+                    f"Skipping orphaned tool message with id: {tool_call_id}"
+                )
+                i += 1
+                continue
+
+        # Add the message to fixed history
+        fixed_history.append(message)
+        i += 1
+
+    return fixed_history
+
+
 def get_llm_response(client, history, system_prompt):
     """Sends chat history to OpenAI API and returns the response message object."""
     MAX_HISTORY_TURNS = 20
@@ -172,6 +231,9 @@ def get_llm_response(client, history, system_prompt):
         )
     else:
         history_to_send = history
+
+    # Validate and fix the history before sending to OpenAI
+    history_to_send = validate_and_fix_history(history_to_send)
 
     messages = [{"role": "system", "content": system_prompt}] + history_to_send
 

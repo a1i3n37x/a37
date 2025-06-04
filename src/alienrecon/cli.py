@@ -156,7 +156,7 @@ def clear(ctx: typer.Context = typer.Option(None, hidden=True)):
     """
     sc = (
         ctx.obj["session_controller"]
-        if ctx and "session_controller" in ctx.obj
+        if ctx and ctx.obj and "session_controller" in ctx.obj
         else SessionController()
     )
     sc.current_target = None
@@ -165,6 +165,63 @@ def clear(ctx: typer.Context = typer.Option(None, hidden=True)):
     sc.save_session()
     cli_console.print("[yellow]Session state cleared.[/yellow]")
     module_logger.info("`clear` command executed.")
+
+
+@app.command()
+def cache(
+    action: str = typer.Argument(
+        "status",
+        help="Action to perform: status, clear, invalidate",
+    ),
+    tool: Optional[str] = typer.Option(
+        None,
+        "--tool",
+        "-t",
+        help="Specific tool to target (for invalidate action)",
+    ),
+):
+    """
+    Manage result cache (view stats, clear cache, etc.).
+    """
+    from alienrecon.core.cache import get_cache
+
+    cache_instance = get_cache()
+
+    if action == "status":
+        stats = cache_instance.get_stats()
+        cli_console.print(
+            Panel.fit(
+                f"[bold cyan]Cache Statistics[/bold cyan]\n"
+                f"Total Entries: {stats['total_entries']}\n"
+                f"Active: [green]{stats['active_entries']}[/green]\n"
+                f"Expired: [red]{stats['expired_entries']}[/red]",
+                border_style="cyan",
+            )
+        )
+
+        if stats["tools"]:
+            cli_console.print("\n[bold]Tool Breakdown:[/bold]")
+            for tool_name, tool_stats in stats["tools"].items():
+                cli_console.print(
+                    f"  {tool_name}: "
+                    f"[green]{tool_stats['active']} active[/green], "
+                    f"[red]{tool_stats['expired']} expired[/red] "
+                    f"(total: {tool_stats['total']})"
+                )
+
+    elif action == "clear" or action == "invalidate":
+        if tool:
+            cache_instance.invalidate(tool)
+            cli_console.print(f"[yellow]Cache cleared for tool: {tool}[/yellow]")
+        else:
+            cache_instance.invalidate()
+            cli_console.print("[yellow]All cache entries cleared.[/yellow]")
+
+    else:
+        cli_console.print(f"[red]Unknown action: {action}[/red]")
+        cli_console.print("Valid actions: status, clear, invalidate")
+
+    module_logger.info(f"`cache {action}` command executed.")
 
 
 @app.command()
@@ -253,7 +310,6 @@ def doctor():
     # Tool checks
     required_tools = [
         ("nmap", "Nmap 🛰️"),
-        ("gobuster", "Gobuster 🚪"),
         ("nikto", "Nikto 🦠"),
         ("enum4linux-ng", "enum4linux-ng 📁"),
         ("hydra", "Hydra 🐍"),
@@ -270,14 +326,14 @@ def doctor():
     if DEFAULT_WORDLIST and os.path.exists(DEFAULT_WORDLIST):
         checks.append(
             (
-                f"[bold green]✔ Gobuster wordlist found[/bold green] ([dim]{DEFAULT_WORDLIST}[/dim])",
+                f"[bold green]✔ Directory wordlist found[/bold green] ([dim]{DEFAULT_WORDLIST}[/dim])",
                 True,
             )
         )
     else:
         checks.append(
             (
-                f"[bold red]✖ Gobuster wordlist NOT found[/bold red] ([dim]{DEFAULT_WORDLIST or 'Not Set'}[/dim])",
+                f"[bold red]✖ Directory wordlist NOT found[/bold red] ([dim]{DEFAULT_WORDLIST or 'Not Set'}[/dim])",
                 False,
             )
         )
@@ -331,9 +387,9 @@ def doctor():
         cli_console.print(
             Panel.fit(
                 "[bold yellow]Remediation Tips:[/bold yellow]\n"
-                "- Install missing tools with your package manager (e.g., apt install nmap gobuster nikto enum4linux-ng hydra)\n"
+                "- Install missing tools with your package manager (e.g., apt install nmap nikto enum4linux-ng hydra)\n"
                 "- Set or fix your OPENAI_API_KEY in your .env or environment\n"
-                "- Download missing wordlists (e.g., SecLists for Gobuster, rockyou.txt for Hydra)\n"
+                "- Download missing wordlists (e.g., SecLists for directory enumeration, rockyou.txt for Hydra)\n"
                 "- Check your internet connection if OpenAI API fails\n"
                 "- See the README for more help!",
                 border_style="yellow",
@@ -393,76 +449,6 @@ def nmap(
             cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
     except Exception as e:
         cli_console.print(f"[bold red]Error running Nmap: {e}[/bold red]")
-        raise typer.Exit(code=1)
-
-
-@manual_app.command()
-def gobuster(
-    target: str = typer.Argument(
-        ..., help="Target IP address or hostname for Gobuster scan."
-    ),
-    port: int = typer.Option(80, help="Port to scan (e.g., 80, 443)"),
-    wordlist: str = typer.Option(
-        None, help="Path to wordlist (default: system default)"
-    ),
-    status_codes: str = typer.Option(
-        "200,201,204,301,302,307,401,403", help="Comma-separated status codes to show."
-    ),
-    threads: int = typer.Option(50, help="Number of threads (default: 50)"),
-    extensions: str = typer.Option(
-        None, help="File extensions to scan (e.g., .php,.txt)"
-    ),
-    save: bool = typer.Option(False, help="Save results to results directory."),
-):
-    """
-    [Advanced] Run a Gobuster scan directly. This bypasses the assistant and session features.
-    """
-    try:
-        from alienrecon.core.session import SessionController
-
-        sc = SessionController()
-        if not sc.gobuster_tool:
-            cli_console.print(
-                "[bold red]Gobuster tool is not available (not installed or misconfigured).[/bold red]"
-            )
-            raise typer.Exit(code=1)
-        kwargs = {
-            "target_ip": target,
-            "port": port,
-            "wordlist": wordlist,
-            "status_codes": status_codes,
-            "threads": threads,
-        }
-        if extensions:
-            kwargs["extensions"] = extensions
-        if port in [443, 8443]:
-            kwargs["ignore_cert_errors"] = True
-        result = sc.gobuster_tool.execute(**kwargs)
-        cli_console.print(f"[green]Gobuster result:[/green] {result['scan_summary']}")
-        findings = result.get("findings")
-        if findings:
-            from pprint import pformat
-
-            cli_console.print("[bold yellow]Findings:[/bold yellow]")
-            cli_console.print(pformat(findings))
-        if result.get("status") == "failure" or result.get("error"):
-            if result.get("raw_stdout"):
-                cli_console.print("[dim]Raw stdout:[/dim]")
-                cli_console.print(result["raw_stdout"])
-            if result.get("raw_stderr"):
-                cli_console.print("[dim]Raw stderr:[/dim]")
-                cli_console.print(result["raw_stderr"])
-        if save:
-            import json
-            import os
-
-            os.makedirs("results", exist_ok=True)
-            fname = f"results/gobuster_{target.replace('.', '_')}_{port}.json"
-            with open(fname, "w") as f:
-                json.dump(result, f, indent=2)
-            cli_console.print(f"[cyan]Results saved to {fname}[/cyan]")
-    except Exception as e:
-        cli_console.print(f"[bold red]Error running Gobuster: {e}[/bold red]")
         raise typer.Exit(code=1)
 
 

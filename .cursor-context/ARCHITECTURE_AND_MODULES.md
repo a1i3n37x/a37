@@ -18,8 +18,6 @@ a37/
 │   │   ├── __init__.py
 │   │   ├── base.py           # Abstract base class 'CommandTool' for external tools
 │   │   ├── ffuf.py           # FFUF tool wrapper
-│   │   ├── gobuster.py       # Gobuster tool wrapper
-│   │   ├── http_fetcher.py   # Internal tool for fetching HTTP page content
 │   │   ├── hydra.py          # Hydra tool wrapper
 │   │   ├── llm_functions.py  # Dedicated functions for LLM tool calling and parameter handling
 │   │   ├── nikto.py          # Nikto tool wrapper
@@ -47,7 +45,7 @@ a37/
 
 * **`src/alienrecon/core/session.py` (`SessionController`)**:
     * Manages the overall state of a reconnaissance session, including the current target, chat history, and mode (novice/expert).
-    * Initializes instances of all available tools (e.g., `NmapTool`, `GobusterTool`).
+    * Initializes instances of all available tools (e.g., `NmapTool`).
     * Handles the interactive loop with the user, sending user input to the LLM and processing responses.
     * Orchestrates tool execution based on LLM proposals and user confirmation, including parameter editing.
     * Saves and loads session state to/from `.alienrecon_session.json`.
@@ -62,7 +60,19 @@ a37/
     * Defines default paths for wordlists (`DEFAULT_WORDLIST`) and password lists (`DEFAULT_PASSWORD_LIST`).
     * Resolves and stores paths to external tool executables (`TOOL_PATHS`) using `shutil.which` and fallback paths.
 
-* **`src/alienrecon/tools/` (Individual Tool Wrappers, e.g., `nmap.py`, `gobuster.py`)**:
+* **`src/alienrecon/core/cache.py`**:
+    * Implements TTL-based result caching to avoid redundant tool executions.
+    * Provides the `ResultCache` class and `@cache_result` decorator.
+    * Stores cached results in `.alienrecon/cache/` with configurable expiration times.
+    * Includes cache management features (statistics, invalidation).
+
+* **`src/alienrecon/core/parallel_executor.py`**:
+    * Enables parallel execution of multiple reconnaissance tools.
+    * Uses `asyncio` and `ThreadPoolExecutor` for concurrent tool runs.
+    * Provides progress tracking and formatted result display.
+    * Intelligently determines when parallel execution is safe and beneficial.
+
+* **`src/alienrecon/tools/` (Individual Tool Wrappers, e.g., `nmap.py`, `ffuf.py`)**:
     * Each file typically defines a class inheriting from `CommandTool` (from `base.py`).
     * Responsibilities include:
         * `build_command()`: Constructs the command-line arguments for the specific tool.
@@ -70,7 +80,7 @@ a37/
     * `http_fetcher.py` is an internal tool, not a `CommandTool` subclass, and directly uses the `requests` library.
 
 * **`src/alienrecon/tools/llm_functions.py`**:
-    * Contains dedicated Python functions (e.g., `nmap_scan`, `gobuster_dir_enum`) designed to be called by the LLM.
+    * Contains dedicated Python functions (e.g., `nmap_scan`, `ffuf_vhost_enum`) designed to be called by the LLM.
     * These functions handle parameter validation, call the appropriate tool wrapper's `execute` method, and return structured results.
     * They are registered in `LLM_TOOL_FUNCTIONS` dictionary, which is used by `agent.py` to define tools for the LLM.
     * Implements logic for smart wordlist selection and default parameter values.
@@ -80,7 +90,7 @@ a37/
 1.  User runs `alienrecon recon --target <target_ip>` via the command line.
 2.  **`cli.py`** parses the command and arguments.
 3.  `cli.py` instantiates `SessionController` from **`core/session.py`**.
-4.  `SessionController` initializes tools (Nmap, Gobuster, etc.) by checking `TOOL_PATHS` from **`core/config.py`**.
+4.  `SessionController` initializes tools (Nmap, ffuf, etc.) by checking `TOOL_PATHS` from **`core/config.py`**.
 5.  `SessionController` sets the target and novice/expert mode.
 6.  `SessionController.start_interactive_recon_session()` begins the main loop:
     a.  If chat history is empty for a new target, an initial prompt is constructed to guide the AI (e.g., to suggest an Nmap scan).

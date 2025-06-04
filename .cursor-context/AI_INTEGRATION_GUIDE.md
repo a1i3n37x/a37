@@ -15,7 +15,7 @@ The core behavior of the Alien Recon AI is guided by `AGENT_SYSTEM_PROMPT`. Key 
 
 ## LLM Tool Functions (`src/alienrecon/tools/llm_functions.py`)
 -   Alien Recon uses dedicated, purpose-built Python functions for each tool interaction the LLM can propose. These are defined in `src/alienrecon/tools/llm_functions.py`.
--   Each function (e.g., `nmap_scan`, `gobuster_dir_enum`, `ffuf_vhost_enum`) is designed with clear parameters, type hints, and often intelligent defaults (e.g., for wordlists, threads).
+-   Each function (e.g., `nmap_scan`, `ffuf_vhost_enum`) is designed with clear parameters, type hints, and often intelligent defaults (e.g., for wordlists, threads).
 -   These functions call the respective tool wrappers' `execute()` methods and return structured `ToolResult` data as a JSON string.
 -   A comprehensive list and details of these functions, their parameters, and return formats are documented in `DEDICATED_FUNCTIONS.md`.
 
@@ -39,7 +39,7 @@ The core behavior of the Alien Recon AI is guided by `AGENT_SYSTEM_PROMPT`. Key 
 
 ## Smart Defaults and Parameter Handling
 -   Many LLM tool functions in `llm_functions.py` incorporate intelligent defaults:
-    -   **Wordlists**: DNS-related functions (e.g., `gobuster_dns_enum`, `ffuf_vhost_enum`) attempt to use smaller, DNS-optimized wordlists first (like `dns-fast-clean.txt`). Directory enumeration functions use `DEFAULT_WORDLIST` from `config.py`.
+    -   **Wordlists**: DNS-related functions (e.g., `ffuf_vhost_enum`) attempt to use smaller, DNS-optimized wordlists first (like `dns-fast-clean.txt`). Directory enumeration functions use `DEFAULT_WORDLIST` from `config.py`.
     -   **Ports/Protocols**: Functions often auto-detect HTTP vs. HTTPS based on port numbers, or have sensible defaults (e.g., port 80/443).
     -   **Threads/Timeouts**: Reasonable defaults are provided for performance and stability.
 -   IP address parameters (like `ip` in `nmap_scan` or `ffuf_vhost_enum`) have specific handling in `SessionController._resolve_and_validate_ip` to ensure a numeric IP is used, prioritizing explicit user input, then the session target IP, then DNS resolution.

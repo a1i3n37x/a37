@@ -69,7 +69,7 @@ def run_command(
 class CommandTool(ABC):
     name: str = "UnnamedTool"
     description: str = "No description provided."
-    executable_name: str = ""  # MUST BE SET BY SUBCLASS (e.g., "nmap", "gobuster")
+    executable_name: str = ""  # MUST BE SET BY SUBCLASS (e.g., "nmap", "ffuf")
 
     def __init__(self):
         if not self.executable_name:

@@ -5,7 +5,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 **Current Status & Next Steps (as of June 2025):**
 
 - ✅ **Doctor command implemented!** Alien Recon now has a beautiful, user-friendly self-test for tools, API, and environment health.
-- ✅ **All core tool wrappers (nmap, gobuster, nikto, enum4linux-ng, hydra, http-fetcher) have robust, real parsing logic and are fully tested.**
+- ✅ **All core tool wrappers (nmap, ffuf, nikto, enum4linux-ng, hydra, http-fetcher) have robust, real parsing logic and are fully tested.**
 - ✅ **Parser tests, fixtures, and ToolResult schema are complete and enforced.**
 - ✅ **Test coverage is high, including edge and error cases.**
 - ✅ **Rich error handling and consistent output schemas.**
@@ -33,11 +33,11 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 ---
 
 **Phase 1: Core Refactor + Typer CLI (1 week)**
-*Goal: Typer-based alienrecon CLI with sub-commands. SessionController class. Preserve current Nmap→Gobuster→Nikto→enum4linux-ng path. Done = alienrecon recon <target> works; CI green.*
+*Goal: Typer-based alienrecon CLI with sub-commands. SessionController class. Preserve current Nmap→ffuf→Nikto→enum4linux-ng path. Done = alienrecon recon <target> works; CI green.*
 
 *   ✅ **Typer-based `alienrecon` CLI:** (`src/alienrecon/cli.py`, sub-commands, options).
 *   ✅ **`SessionController` class (`src/alienrecon/core/session.py`):** (Initialization, tool management, interactive loop logic, LLM interaction, tool execution & confirmation).
-*   ✅ **Preserve current Nmap→Gobuster→Nikto→enum4linux-ng path:** (AI-guided flow implemented).
+*   ✅ **Preserve current Nmap→ffuf→Nikto→enum4linux-ng path:** (AI-guided flow implemented).
 *   ✅ **Done = `alienrecon recon <target>` works; CI green.**
 
 **Status: Phase 1 - COMPLETE** 🎉
@@ -63,9 +63,9 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 **Phase 3: Modular, User-Driven Recon (1 week)**
 *Goal: Refocus on a flexible, user-driven workflow. Remove auto-recon and TaskQueue orchestration. Make each tool integration robust, user-friendly, and easy to run individually or in user-defined sequences.*
 
-*   [ ] **Manual Tool Execution:**
-    *   [ ] Ensure each tool (nmap, gobuster, nikto, enum4linux-ng, hydra, http-fetcher) can be run independently with clear CLI options and argument validation.
-    *   [ ] Improve help messages, error handling, and user feedback for each tool.
+*   [x] **Manual Tool Execution:**
+    *   [x] Ensure each tool (nmap, ffuf, nikto, enum4linux-ng, hydra, http-fetcher) can be run independently with clear CLI options and argument validation.
+    *   [x] Improve help messages, error handling, and user feedback for each tool.
 *   [ ] **Flexible Task Management:**
     *   [ ] Allow users to select, queue, and reorder tasks manually (if desired), but do not enforce automation.
     *   [ ] Provide CLI flags or interactive prompts for chaining tools, but keep user in control.
@@ -76,7 +76,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
     *   [ ] Update documentation to reflect the new manual-first workflow.
     *   [ ] Add usage examples and best practices for running and combining tools.
 
-**Status: Phase 3 - NEXT UP**
+**Status: Phase 3 - IN PROGRESS**
 
 ---
 
@@ -99,7 +99,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
     *   [ ] The report should summarize:
         *   Target information.
         *   Key Nmap findings.
-        *   Significant results from Gobuster, Nikto, enum4linux-ng.
+        *   Significant results from ffuf, Nikto, enum4linux-ng.
         *   (Future, from Phase 4.5) MITRE ATT&CK techniques observed/suggested.
         *   Any exploit suggestions made.
         *   A section for the user to add their own notes and flag.
@@ -115,7 +115,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 *Goal: Deepen the educational value by linking reconnaissance actions and findings to the MITRE ATT&CK framework, helping users understand the broader context of their techniques.*
 
 *   [ ] **MITRE ATT&CK Mapping in Tool Wrappers/Parsers:**
-    *   [ ] Research and identify relevant MITRE ATT&CK techniques associated with the information gathered by Nmap, Gobuster, Nikto, and enum4linux-ng.
+    *   [ ] Research and identify relevant MITRE ATT&CK techniques associated with the information gathered by Nmap, ffuf, Nikto, and enum4linux-ng.
     *   [ ] Modify the `parse_output` methods in tool classes (or add a subsequent analysis step) to include a list of relevant MITRE ATT&CK technique IDs in their structured results.
 *   [ ] **AI Explanation of MITRE Techniques:**
     *   [ ] Update the `AGENT_SYSTEM_PROMPT` to instruct the AI to:
@@ -147,7 +147,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 - CLI-driven, with AI chat guidance and structured, actionable output.
 
 **Current Capabilities:**
-- Robust wrappers for nmap, gobuster, nikto, enum4linux-ng, hydra, and http-fetcher.
+- Robust wrappers for nmap, ffuf, nikto, enum4linux-ng, hydra, and http-fetcher.
 - All tools have real parsing logic and are fully tested (including edge/error cases).
 - Consistent output schema (`ToolResult`) for all tools.
 - Interactive and scriptable CLI (Typer-based).

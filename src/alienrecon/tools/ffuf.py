@@ -107,11 +107,17 @@ class FFUFTool(CommandTool):
                     "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
                 )
         else:
-            # Use default directory wordlist
-            wordlist_to_use = (
-                DEFAULT_WORDLIST
-                or "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
-            )
+            # Use default directory wordlist, prefer common.txt if available
+            default_dir = os.path.dirname(DEFAULT_WORDLIST) if DEFAULT_WORDLIST else ""
+            common_wordlist = os.path.join(default_dir, "common.txt")
+            if os.path.exists(common_wordlist):
+                wordlist_to_use = common_wordlist
+            else:
+                # Fallback to configured default
+                wordlist_to_use = (
+                    DEFAULT_WORDLIST
+                    or "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+                )
 
         # Verify wordlist exists
         if not os.path.exists(wordlist_to_use):
@@ -256,19 +262,44 @@ class FFUFTool(CommandTool):
             "findings": {},
         }
 
-        if stderr and "error" in stderr.lower():
-            result["status"] = "failure"
-            result["scan_summary"] = f"FFUF {mode} scan for {target_context} failed."
-            result["error"] = stderr
-            result["findings"] = {}
-            return result
+        # Enhanced stderr handling - capture stderr early for better diagnostics
+        if stderr and stderr.strip():
+            # Store raw stderr for potential diagnostic value
+            result["raw_stderr"] = stderr[:2000]  # Limit to 2000 chars
+
+            # Check for specific error patterns that indicate failure
+            stderr_lower = stderr.lower()
+            if any(
+                error_pattern in stderr_lower
+                for error_pattern in [
+                    "error",
+                    "fatal",
+                    "failed",
+                    "connection refused",
+                    "timeout",
+                    "ssl handshake",
+                    "certificate",
+                    "tls handshake",
+                    "no route to host",
+                ]
+            ):
+                logger.warning(
+                    f"FFUF stderr contains potential error indicators: {stderr[:200]}"
+                )
+                # Don't immediately fail - stderr might contain useful diagnostic info
+                # But include it in our analysis
+                result["stderr_diagnostics"] = stderr.strip()
 
         if not stdout or not stdout.strip():
             result["status"] = "failure"
             result["scan_summary"] = (
                 f"FFUF {mode} scan for {target_context} produced no valid output."
             )
-            result["error"] = "No output or only whitespace received from FFUF stdout."
+            # Enhanced error message including stderr if available
+            error_msg = "No output or only whitespace received from FFUF stdout."
+            if stderr and stderr.strip():
+                error_msg += f" Stderr: {stderr.strip()}"
+            result["error"] = error_msg
             result["findings"] = {}
             return result
 
@@ -384,9 +415,15 @@ class FFUFTool(CommandTool):
                 f"Could not find or parse valid JSON structure in FFUF output. Raw output processing will be attempted. Output: \\n{stdout[:500]}"
             )
             result["status"] = "partial"
-            result["error"] = (
-                "Failed to parse structured JSON output from FFUF. Displaying raw findings."
-            )
+
+            # Enhanced error message with stderr information
+            error_msg = "Failed to parse structured JSON output from FFUF. Displaying raw findings."
+            if stderr and stderr.strip():
+                error_msg += (
+                    f" Stderr may contain diagnostic info: {stderr.strip()[:300]}"
+                )
+            result["error"] = error_msg
+
             result["findings"] = self._parse_raw_output(stdout, mode)  # original stdout
             result["raw_stdout"] = stdout  # Add raw output if parsing failed
             return result
@@ -394,7 +431,13 @@ class FFUFTool(CommandTool):
         except Exception as e:
             logger.error(f"Error parsing FFUF output: {e}")
             result["status"] = "failure"
-            result["error"] = str(e)
+
+            # Enhanced error message including stderr if available
+            error_msg = str(e)
+            if stderr and stderr.strip():
+                error_msg += f" (stderr: {stderr.strip()[:200]})"
+            result["error"] = error_msg
+
             result["findings"] = {}
             return result
 

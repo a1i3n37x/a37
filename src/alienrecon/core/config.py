@@ -19,7 +19,7 @@ if not API_KEY:
     )
     sys.exit(1)
 
-# --- Default Wordlist Configuration (for Gobuster) ---
+# --- Default Wordlist Configuration (for directory enumeration) ---
 DEFAULT_WORDLIST_PATH_ENV = os.getenv("ALIENRECON_WORDLIST")
 DEFAULT_WORDLIST = (
     DEFAULT_WORDLIST_PATH_ENV
@@ -27,8 +27,8 @@ DEFAULT_WORDLIST = (
 )
 if not os.path.exists(DEFAULT_WORDLIST):
     logging.warning(
-        f"Default Gobuster wordlist not found at '{DEFAULT_WORDLIST}'. "
-        "Gobuster scans might fail or use an internal default unless "
+        f"Default wordlist not found at '{DEFAULT_WORDLIST}'. "
+        "Directory enumeration scans might fail or use an internal default unless "
         "a wordlist is specified per scan."
     )
 
@@ -72,11 +72,12 @@ if DEFAULT_PASSWORD_LIST and not os.path.exists(DEFAULT_PASSWORD_LIST):
 # Define known common paths as fallbacks if shutil.which fails
 KNOWN_TOOL_FALLBACK_PATHS = {
     "nmap": "/usr/bin/nmap",
-    "gobuster": "/usr/bin/gobuster",  # Or e.g. /usr/local/bin/gobuster
     "nikto": "/usr/bin/nikto",  # Or sometimes /opt/nikto/program/nikto.pl (would need wrapper for .pl)
     "enum4linux-ng": "/usr/bin/enum4linux-ng",  # Or enum4linux-ng.py if that's the executable
     "hydra": "/usr/bin/hydra",
     "ffuf": "/usr/bin/ffuf",  # Added ffuf
+    "openssl": "/usr/bin/openssl",  # Added openssl for SSL certificate inspection
+    "curl": "/usr/bin/curl",  # Added curl for HTTP SSL probing
 }
 
 TOOL_PATHS = {}
