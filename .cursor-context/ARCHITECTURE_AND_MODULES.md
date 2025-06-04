@@ -48,12 +48,16 @@ a37/
     * Initializes instances of all available tools (e.g., `NmapTool`).
     * Handles the interactive loop with the user, sending user input to the LLM and processing responses.
     * Orchestrates tool execution based on LLM proposals and user confirmation, including parameter editing.
+    * Implements proper tool cancellation handling to prevent OpenAI API errors.
+    * Manages parallel execution of compatible reconnaissance tools.
     * Saves and loads session state to/from `.alienrecon_session.json`.
 
 * **`src/alienrecon/core/agent.py`**:
     * Defines the AI agent's persona and system prompt (`AGENT_SYSTEM_PROMPT`).
     * Contains the `get_llm_response` function to interact with the OpenAI API.
     * Dynamically generates the `tools` list for OpenAI function calling based on `LLM_TOOL_FUNCTIONS`.
+    * Implements `validate_and_fix_history()` to ensure chat history meets OpenAI API requirements.
+    * Handles null content fields and orphaned tool messages to prevent API errors.
 
 * **`src/alienrecon/core/config.py`**:
     * Loads essential configurations like `OPENAI_API_KEY`.

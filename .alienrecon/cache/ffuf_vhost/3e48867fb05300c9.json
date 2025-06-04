@@ -1,0 +1,23 @@
+{
+  "timestamp": 1749012982.2592669,
+  "ttl": 3600,
+  "tool_name": "ffuf_vhost",
+  "args": {
+    "ip": "10.10.227.73",
+    "domain": "10.10.227.73",
+    "wordlist": "src/alienrecon/wordlists/dns-fast-clean.txt",
+    "threads": 40,
+    "filter_size": null,
+    "timeout": 10,
+    "port": 443
+  },
+  "result": {
+    "tool": "ffuf",
+    "mode": "vhost_enum",
+    "status": "failure",
+    "findings": [],
+    "scan_summary": "FFUF vhost scan for 10.10.227.73 produced no valid output.",
+    "raw_output": null,
+    "error": "No output or only whitespace received from FFUF stdout."
+  }
+}

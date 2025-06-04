@@ -33,6 +33,14 @@ Just pure, weaponized enumeration with AI in your corner like a rogue sysadmin f
 
 ---
 
+## 🚀 Recent Improvements
+
+- ✅ **Stable Tool Cancellation**: Fixed OpenAI API errors when skipping tool suggestions
+- ✅ **Parallel Execution**: Run compatible tools simultaneously for faster reconnaissance
+- ✅ **Enhanced Session Management**: Robust state tracking and recovery
+- ✅ **Improved Error Handling**: Better validation and user feedback
+- ✅ **Context-Aware AI**: Maintains awareness of scan results across tools
+
 ## ⚠️ Coming Soon...
 
 - 🧬 **MITRE ATT&CK tagging**: Know the technique, not just the tool
@@ -55,24 +63,83 @@ poetry install
 
 ## 💾 Usage
 
-### Recommended: Assistant-Driven Workflow
+### 🤖 Assistant-Driven Workflow (Recommended)
 
-The primary way to use Alien Recon is through the conversational AI assistant. Start a session and interact naturally:
+Alien Recon's core strength is its conversational AI assistant that guides you through reconnaissance like an experienced teammate. Start a session and interact naturally:
 
 ```sh
+# Start an interactive session
+alienrecon recon --target 10.10.10.10
+
+# Or start without a target and set it later
 alienrecon
+> target 192.168.1.100
 ```
 
-You can then type commands like:
-- "Scan 10.10.10.10 with nmap"
-- "Run directory enumeration on the web server"
-- "What do these results mean?"
+#### Example Conversations:
 
-The assistant will guide you, run tools, explain results, and manage your recon session.
+**Basic Reconnaissance:**
+```
+You: "Start with a basic scan"
+AI: "I'll begin with a fast Nmap SYN scan on the top 1000 ports..."
+[Proposes nmap_scan with educational parameter explanations]
 
-### Advanced: Manual Tool Subcommands
+You: [Confirms scan]
+AI: "Found ports 22, 80, 443 open. Let me get detailed service information..."
+[Proposes follow-up scan with service detection]
+```
 
-- You can run tools directly using the `manual` subgroup (e.g., `alienrecon manual nmap ...`), but this bypasses the assistant and session features. Results are managed, but you lose conversational AI guidance. This mode is for advanced/manual use only.
+**Multi-Step Planning:**
+```
+You: "After the Nmap scan, if you find web ports, run FFUF directory enumeration and then Nikto"
+AI: "I'll create a reconnaissance plan for comprehensive web service enumeration:
+     1. Initial Nmap scan to identify open ports
+     2. Directory enumeration (only if web ports found)
+     3. Vulnerability scanning (only if web ports found)
+     Shall I create this plan?"
+
+You: "Yes, create the plan"
+AI: [Creates structured plan with conditional execution]
+```
+
+**Results Analysis:**
+```
+You: "What did we find on the web server?"
+AI: "From our scans, the web server on port 80 revealed:
+     - Apache 2.4.41 with potential vulnerabilities
+     - /admin directory (403 Forbidden)
+     - /backup directory with directory listing
+     Let's investigate the backup directory..."
+```
+
+**Learning Mode:**
+```
+You: "Why did you choose those Nmap parameters?"
+AI: "I used -sS (SYN scan) because it's fast and stealthy, -Pn to skip ping
+     probes since CTF targets often block ICMP, and --top-ports 1000 to
+     check the most common services first..."
+```
+
+**Tool Cancellation (Fixed!):**
+```
+AI: [Proposes Nmap scan with parameters]
+You: [Chooses to Skip]
+AI: "No problem! What would you like to explore instead? I can suggest
+     alternative reconnaissance approaches..."
+[No more API errors - smooth continuation]
+```
+
+### 🔧 Advanced: Manual Tool Subcommands
+
+For experienced users who want direct tool control:
+
+```sh
+# Run tools directly (bypasses AI assistant)
+alienrecon manual nmap --ip 10.10.10.10 --scan-type SYN --top-ports 1000
+alienrecon manual ffuf --url http://10.10.10.10 --mode dir
+```
+
+> **Note**: Manual mode bypasses the assistant's guidance, session management, and educational features. The assistant-driven workflow is recommended for learning and comprehensive reconnaissance.
 
 ---
 

@@ -23,7 +23,7 @@ from ..tools.http_fetcher import HttpPageFetcherTool  # ADDED
 from ..tools.hydra import HydraTool
 
 # Import the LLM_TOOL_FUNCTIONS registry
-from ..tools.llm_functions import LLM_TOOL_FUNCTIONS
+from ..tools.llm_functions import LLM_TOOL_FUNCTIONS, _set_session_controller
 from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
 from ..tools.smb import SmbTool
@@ -79,10 +79,368 @@ class SessionController:
         self.ssl_inspector_tool: Optional[SSLInspectorTool] = None
         self._initialize_tools()
 
+        # Task Queue and Plan Management for flexible multi-step workflows
+        self.task_queue: list[dict] = []  # Queue of planned tasks
+        self.current_plan: Optional[dict] = (
+            None  # Current multi-step plan being executed
+        )
+        self.plan_history: list[dict] = []  # History of completed plans
+        self.auto_execution_mode: bool = False  # Whether to auto-execute approved plans
+
         # Try to load session state if it exists
         self.load_session()
 
+        # Set session controller reference for plan management functions
+        _set_session_controller(self)
+
         logger.info("SessionController initialized successfully.")
+
+    def _update_session_state_from_result(self, tool_result: dict, function_name: str):
+        """
+        Update session state based on tool results to maintain context for future AI recommendations.
+        This helps the AI make more informed suggestions based on previous discoveries.
+        """
+        try:
+            if (
+                not isinstance(tool_result, dict)
+                or tool_result.get("status") != "success"
+            ):
+                return
+
+            findings = tool_result.get("findings", {})
+
+            # Update open ports from Nmap results
+            if function_name == "nmap_scan" and "open_ports" in findings:
+                discovered_ports = []
+                for port_info in findings["open_ports"]:
+                    port_data = {
+                        "port": port_info.get("port"),
+                        "service": port_info.get("service", "unknown"),
+                        "version": port_info.get("version", ""),
+                        "state": port_info.get("state", "open"),
+                    }
+                    discovered_ports.append(port_data)
+
+                # Merge with existing ports, avoiding duplicates
+                existing_ports = {p["port"] for p in self.state["open_ports"]}
+                for new_port in discovered_ports:
+                    if new_port["port"] not in existing_ports:
+                        self.state["open_ports"].append(new_port)
+
+                logger.info(
+                    f"Updated session state with {len(discovered_ports)} discovered ports"
+                )
+
+            # Update discovered subdomains/vhosts from FFUF vhost enumeration
+            elif function_name == "ffuf_vhost_enum" and isinstance(findings, list):
+                new_subdomains = [
+                    vhost
+                    for vhost in findings
+                    if vhost not in self.state["discovered_subdomains"]
+                ]
+                self.state["discovered_subdomains"].extend(new_subdomains)
+                logger.info(
+                    f"Updated session state with {len(new_subdomains)} new virtual hosts"
+                )
+
+            # Update web findings from directory enumeration, Nikto, etc.
+            elif function_name in ["ffuf_dir_enum", "nikto_scan", "probe_ssl_errors"]:
+                # Extract target URL from tool result or infer from current target
+                target_base = None
+
+                if function_name == "ffuf_dir_enum" and isinstance(findings, list):
+                    # Extract base URL from first finding
+                    if findings:
+                        first_url = findings[0].get("url", "")
+                        if first_url:
+                            from urllib.parse import urlparse
+
+                            parsed = urlparse(first_url)
+                            target_base = f"{parsed.scheme}://{parsed.netloc}"
+
+                            if target_base not in self.state["web_findings"]:
+                                self.state["web_findings"][target_base] = {
+                                    "directories": [],
+                                    "interesting_files": [],
+                                    "technologies": [],
+                                    "vulnerabilities": [],
+                                }
+
+                            # Add discovered directories
+                            for item in findings:
+                                path = item.get("path", "")
+                                if (
+                                    path
+                                    and path
+                                    not in self.state["web_findings"][target_base][
+                                        "directories"
+                                    ]
+                                ):
+                                    self.state["web_findings"][target_base][
+                                        "directories"
+                                    ].append(path)
+
+                elif function_name == "nikto_scan" and isinstance(findings, list):
+                    # Update vulnerabilities and technologies from Nikto
+                    if self.current_target:
+                        # Try to infer web service URL from scan summary or target
+                        for port_info in self.state["open_ports"]:
+                            if port_info["port"] in [80, 443, 8080, 8443]:
+                                scheme = (
+                                    "https"
+                                    if port_info["port"] in [443, 8443]
+                                    else "http"
+                                )
+                                target_base = f"{scheme}://{self.current_target}:{port_info['port']}"
+
+                                if target_base not in self.state["web_findings"]:
+                                    self.state["web_findings"][target_base] = {
+                                        "directories": [],
+                                        "interesting_files": [],
+                                        "technologies": [],
+                                        "vulnerabilities": [],
+                                    }
+
+                                # Add vulnerabilities from Nikto findings
+                                for finding in findings:
+                                    vuln_desc = finding.get("description", "")
+                                    if (
+                                        vuln_desc
+                                        and vuln_desc
+                                        not in self.state["web_findings"][target_base][
+                                            "vulnerabilities"
+                                        ]
+                                    ):
+                                        self.state["web_findings"][target_base][
+                                            "vulnerabilities"
+                                        ].append(vuln_desc)
+
+            # Save updated state
+            self.save_session()
+
+        except Exception as e:
+            logger.error(
+                f"Error updating session state from {function_name} result: {e}"
+            )
+
+    def get_context_summary(self) -> str:
+        """
+        Generate a context summary for the AI to reference when making recommendations.
+        This provides the AI with awareness of previous discoveries and current state.
+        """
+        context_parts = []
+
+        if self.current_target:
+            context_parts.append(f"Target: {self.current_target}")
+
+        if self.state["open_ports"]:
+            ports_summary = ", ".join(
+                [f"{p['port']}/{p['service']}" for p in self.state["open_ports"][:5]]
+            )
+            if len(self.state["open_ports"]) > 5:
+                ports_summary += f" (and {len(self.state['open_ports']) - 5} more)"
+            context_parts.append(f"Open ports discovered: {ports_summary}")
+
+        if self.state["discovered_subdomains"]:
+            subdomains_summary = ", ".join(self.state["discovered_subdomains"][:3])
+            if len(self.state["discovered_subdomains"]) > 3:
+                subdomains_summary += (
+                    f" (and {len(self.state['discovered_subdomains']) - 3} more)"
+                )
+            context_parts.append(f"Virtual hosts found: {subdomains_summary}")
+
+        if self.state["web_findings"]:
+            web_services = list(self.state["web_findings"].keys())
+            if web_services:
+                context_parts.append(
+                    f"Web services enumerated: {', '.join(web_services[:2])}"
+                )
+
+        # Include plan status if available
+        if self.current_plan:
+            plan_summary = self.get_plan_summary()
+            context_parts.append(f"Plan: {plan_summary}")
+
+        if context_parts:
+            return "Session Context: " + " | ".join(context_parts)
+        else:
+            return "Session Context: Fresh reconnaissance session, no previous discoveries."
+
+    # === PLAN MANAGEMENT METHODS ===
+
+    def create_reconnaissance_plan(
+        self, plan_name: str, steps: list[dict], description: str = ""
+    ) -> str:
+        """
+        Create a new multi-step reconnaissance plan.
+
+        Args:
+            plan_name: Name for the plan
+            steps: List of step dicts with 'function_name', 'arguments', 'description', and 'conditions'
+            description: Optional description of the plan
+
+        Returns:
+            plan_id: Unique identifier for the created plan
+        """
+        plan_id = (
+            f"plan_{len(self.plan_history) + 1}_{datetime.now().strftime('%H%M%S')}"
+        )
+
+        plan = {
+            "plan_id": plan_id,
+            "plan_name": plan_name,
+            "description": description,
+            "steps": steps,
+            "created_at": datetime.now().isoformat(),
+            "status": "pending",
+            "current_step": 0,
+            "completed_steps": [],
+            "step_results": {},
+        }
+
+        self.current_plan = plan
+        self.save_session()
+
+        logger.info(f"Created reconnaissance plan: {plan_name} (ID: {plan_id})")
+        return plan_id
+
+    def get_plan_status(self) -> Optional[dict]:
+        """Get status of current plan."""
+        return self.current_plan
+
+    def execute_next_plan_step(self) -> bool:
+        """
+        Execute the next step in the current plan.
+        Returns True if step was executed, False if plan is complete or no plan exists.
+        """
+        if not self.current_plan or self.current_plan["status"] == "completed":
+            return False
+
+        current_step_idx = self.current_plan["current_step"]
+        steps = self.current_plan["steps"]
+
+        if current_step_idx >= len(steps):
+            self._complete_current_plan()
+            return False
+
+        step = steps[current_step_idx]
+
+        # Check if step conditions are met based on previous results
+        if not self._check_step_conditions(step, self.current_plan["step_results"]):
+            logger.info(f"Skipping step {current_step_idx + 1}: conditions not met")
+            self.current_plan["current_step"] += 1
+            self.save_session()
+            return self.execute_next_plan_step()  # Try next step
+
+        # Create a mock tool call for this step
+        from openai.types.chat.chat_completion_message_tool_call import (
+            ChatCompletionMessageToolCall,
+        )
+        from openai.types.chat.chat_completion_message_tool_call_function import (
+            ChatCompletionMessageToolCallFunction,
+        )
+
+        mock_tool_call = ChatCompletionMessageToolCall(
+            id=f"call_{datetime.now().strftime('%H%M%S')}",
+            function=ChatCompletionMessageToolCallFunction(
+                name=step["function_name"], arguments=json.dumps(step["arguments"])
+            ),
+            type="function",
+        )
+
+        self.pending_tool_call = mock_tool_call
+
+        # Display step information
+        self.console.print(
+            f"[bold cyan]Plan Step {current_step_idx + 1}/{len(steps)}:[/bold cyan] {step.get('description', step['function_name'])}"
+        )
+
+        # Execute the step (will use existing confirmation logic)
+        success = self._execute_single_tool_call_and_update_history()
+
+        if success:
+            # Store the result and move to next step
+            self.current_plan["completed_steps"].append(current_step_idx)
+            self.current_plan["current_step"] += 1
+            self.current_plan["step_results"][str(current_step_idx)] = (
+                self.chat_history[-1]["content"] if self.chat_history else "{}"
+            )
+            self.save_session()
+
+        return success
+
+    def _check_step_conditions(self, step: dict, previous_results: dict) -> bool:
+        """
+        Check if step conditions are met based on previous results.
+        """
+        conditions = step.get("conditions", {})
+        if not conditions:
+            return True  # No conditions means always execute
+
+        # Check if required ports are open
+        if "requires_open_ports" in conditions:
+            required_ports = conditions["requires_open_ports"]
+            open_ports = [p["port"] for p in self.state.get("open_ports", [])]
+            if not any(port in open_ports for port in required_ports):
+                return False
+
+        # Check if previous step found certain results
+        if "requires_previous_findings" in conditions:
+            required_findings = conditions["requires_previous_findings"]
+            # Simple check - could be made more sophisticated
+            for finding in required_findings:
+                found = False
+                for result_json in previous_results.values():
+                    if finding.lower() in result_json.lower():
+                        found = True
+                        break
+                if not found:
+                    return False
+
+        return True
+
+    def _complete_current_plan(self):
+        """Mark current plan as completed and archive it."""
+        if self.current_plan:
+            self.current_plan["status"] = "completed"
+            self.current_plan["completed_at"] = datetime.now().isoformat()
+            self.plan_history.append(self.current_plan)
+            self.current_plan = None
+            self.save_session()
+            self.console.print(
+                "[bold green]✅ Reconnaissance plan completed![/bold green]"
+            )
+
+    def cancel_current_plan(self):
+        """Cancel the current plan."""
+        if self.current_plan:
+            self.current_plan["status"] = "cancelled"
+            self.current_plan["cancelled_at"] = datetime.now().isoformat()
+            self.plan_history.append(self.current_plan)
+            self.current_plan = None
+            self.save_session()
+            self.console.print(
+                "[yellow]⚠️ Current reconnaissance plan cancelled.[/yellow]"
+            )
+
+    def get_plan_summary(self) -> str:
+        """Generate a summary of current plan status for the AI."""
+        if not self.current_plan:
+            return "No active reconnaissance plan."
+
+        plan = self.current_plan
+        total_steps = len(plan["steps"])
+        completed = len(plan["completed_steps"])
+
+        summary = f"Active Plan: '{plan['plan_name']}' - Step {plan['current_step'] + 1}/{total_steps} ({completed} completed)"
+
+        if plan["current_step"] < total_steps:
+            next_step = plan["steps"][plan["current_step"]]
+            summary += (
+                f"\nNext: {next_step.get('description', next_step['function_name'])}"
+            )
+
+        return summary
 
     def _initialize_tools(self):
         logger.debug("Initializing reconnaissance tools...")
@@ -167,6 +525,13 @@ class SessionController:
             status_lines.append(
                 "[bold]🔑 Hydra Password List:[/bold] [red]Not Set/Found - User/AI must specify[/red]"
             )
+
+        # Add plan status if available
+        if self.current_plan:
+            plan = self.current_plan
+            plan_status = f"[bold]📋 Active Plan:[/bold] [bold cyan]{plan['plan_name']}[/bold cyan] (Step {plan['current_step'] + 1}/{len(plan['steps'])})"
+            status_lines.append(plan_status)
+
         status_text = "\n".join(status_lines)
         if panel:
             self.console.print(
@@ -191,6 +556,11 @@ class SessionController:
             "chat_history": self.chat_history,
             "is_novice_mode": self.is_novice_mode,
             "state": self.state,  # Save session state
+            # Task Management State
+            "task_queue": self.task_queue,
+            "current_plan": self.current_plan,
+            "plan_history": self.plan_history,
+            "auto_execution_mode": self.auto_execution_mode,
         }
         try:
             with open(self.SESSION_FILE, "w", encoding="utf-8") as f:
@@ -209,6 +579,13 @@ class SessionController:
                 self.chat_history = session_data.get("chat_history", [])
                 self.is_novice_mode = session_data.get("is_novice_mode", True)
                 self.state = session_data.get("state", self.state)  # Load session state
+                # Load Task Management State
+                self.task_queue = session_data.get("task_queue", [])
+                self.current_plan = session_data.get("current_plan")
+                self.plan_history = session_data.get("plan_history", [])
+                self.auto_execution_mode = session_data.get(
+                    "auto_execution_mode", False
+                )
                 logger.info(f"Session loaded from {self.SESSION_FILE}")
             except Exception as e:
                 logger.error(f"Failed to load session: {e}", exc_info=True)
@@ -449,14 +826,13 @@ class SessionController:
                         self._execute_single_tool_call_and_update_history()
                     else:
                         if self.pending_tool_call is not None:
-                            tool_call_id = self.pending_tool_call.id
                             function_name = self.pending_tool_call.function.name
-                            self._send_tool_cancellation_to_llm(
-                                tool_call_id, function_name
+                            self.console.print(
+                                f"[yellow]Tool call '{function_name}' cancelled by user.[/yellow]"
                             )
                             self.pending_tool_call = None
-                            ai_response = self._get_llm_response_from_agent()
-                            self._process_llm_message(ai_response)
+                            # Don't call LLM immediately after cancelling a tool
+                            # Instead, continue to user input loop
                         else:
                             break
 
@@ -511,10 +887,17 @@ class SessionController:
         logger.debug(
             f"Sending {len(self.chat_history)} messages to LLM. Last: '{self.chat_history[-1]['content'][:70] if self.chat_history and self.chat_history[-1].get('content') else 'Tool Call/No Content'}'"
         )
+
+        # Add context-aware system prompt enhancement
+        context_summary = self.get_context_summary()
+        enhanced_system_prompt = (
+            f"{AGENT_SYSTEM_PROMPT}\n\n**CURRENT SESSION CONTEXT:**\n{context_summary}"
+        )
+
         ai_message_obj = get_llm_response(
             client=self.openai_client,
             history=self.chat_history,
-            system_prompt=AGENT_SYSTEM_PROMPT,
+            system_prompt=enhanced_system_prompt,
         )
         if ai_message_obj:
             log_content = (
@@ -567,6 +950,7 @@ class SessionController:
         if ai_message.tool_calls:
             tool_calls_to_process = list(ai_message.tool_calls)
             confirmed_tool_calls = []
+            cancelled_tool_calls = []
 
             # First, confirm all tool calls
             for tool_call in tool_calls_to_process:
@@ -578,9 +962,31 @@ class SessionController:
                     confirmed_tool_calls.append(tool_call)
                 else:
                     # User cancelled the tool proposal
-                    self._send_tool_cancellation_to_llm(
-                        tool_call.id, tool_call.function.name
+                    cancelled_tool_calls.append(tool_call)
+                    self.console.print(
+                        f"[yellow]Tool call '{tool_call.function.name}' cancelled by user.[/yellow]"
                     )
+
+                # Clear the pending tool call after processing to prevent duplicate handling
+                self.pending_tool_call = None
+
+            # If all tools were cancelled, update the assistant message in history to remove tool_calls
+            if not confirmed_tool_calls and cancelled_tool_calls:
+                # Remove the assistant message with tool_calls that was just added
+                if (
+                    self.chat_history
+                    and self.chat_history[-1].get("role") == "assistant"
+                    and self.chat_history[-1].get("tool_calls")
+                ):
+                    # Remove tool_calls from the last assistant message and ensure content is not null
+                    self.chat_history[-1]["tool_calls"] = None
+                    if self.chat_history[-1].get("content") is None:
+                        self.chat_history[-1]["content"] = (
+                            "I understand you've cancelled the tool proposals. What would you like to do next? I can suggest other reconnaissance approaches or answer any questions you have about the target."
+                        )
+                    self.save_session()
+                    # Return without calling LLM again since no tools were executed
+                    return
 
             # If multiple tools confirmed, offer parallel execution
             if len(confirmed_tool_calls) > 1:
@@ -663,13 +1069,17 @@ class SessionController:
                     if not self._execute_single_tool_call_and_update_history():
                         continue
 
-            self.pending_tool_call = None  # Clear pending call after the loop
+            # Clear any pending tool calls to prevent duplicate processing in main loop
+            self.pending_tool_call = None
 
-            # Only after all tool messages are appended, get next LLM response
-            next_ai_response_message = self._get_llm_response_from_agent()
-            self._process_llm_message(
-                next_ai_response_message
-            )  # Recursive call for next turn
+            # Only get next LLM response if we actually executed some tools
+            # If all tools were cancelled, we should return to the interactive session
+            if confirmed_tool_calls:
+                # Only after all tool messages are appended, get next LLM response
+                next_ai_response_message = self._get_llm_response_from_agent()
+                self._process_llm_message(
+                    next_ai_response_message
+                )  # Recursive call for next turn
             return  # Important: return after handling tool calls and dispatching next LLM turn
 
         # If we reach here, the AI message had no tool calls but had content - this is normal
@@ -691,9 +1101,9 @@ class SessionController:
                 f"[bold red]Error: AI proposed action '{tool_name_llm}' with invalid arguments. Aborting this action.[/bold red]"
             )
             if self.pending_tool_call is not None:
-                tool_call_id = self.pending_tool_call.id
-                # function_name = self.pending_tool_call.function.name # Already have tool_name_llm
-                self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                self.console.print(
+                    f"[yellow]Tool call '{tool_name_llm}' cancelled due to invalid arguments.[/yellow]"
+                )
                 self.pending_tool_call = None
             return False
 
@@ -707,8 +1117,9 @@ class SessionController:
                 f"[bold red]Error: Unknown tool function '{tool_name_llm}' proposed by AI. Aborting.[/bold red]"
             )
             if self.pending_tool_call is not None:
-                tool_call_id = self.pending_tool_call.id
-                self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                self.console.print(
+                    f"[yellow]Tool call '{tool_name_llm}' cancelled due to unknown function.[/yellow]"
+                )
                 self.pending_tool_call = None
             return False
 
@@ -784,9 +1195,9 @@ class SessionController:
                     f"User skipped tool: {display_name} (Args: {current_display_args})"
                 )
                 if self.pending_tool_call is not None:
-                    tool_call_id = self.pending_tool_call.id
-                    # function_name = self.pending_tool_call.function.name # Already have tool_name_llm
-                    self._send_tool_cancellation_to_llm(tool_call_id, tool_name_llm)
+                    self.console.print(
+                        f"[yellow]Tool call '{tool_name_llm}' cancelled by user.[/yellow]"
+                    )
                     self.pending_tool_call = None
                 return False
             elif choice in ["q", "quit"]:
@@ -871,30 +1282,6 @@ class SessionController:
                     markup=False,
                 )
                 continue
-
-    def _send_tool_cancellation_to_llm(self, tool_call_id: str, function_name: str):
-        """Handles user cancellation of a tool, adds a 'tool' role message to history."""
-        self.console.print(
-            f"[yellow]Tool call '{function_name}' cancelled by user.[/yellow]"
-        )
-
-        cancellation_content = json.dumps(
-            {
-                "status": "cancelled_by_user",
-                "message": f"User explicitly cancelled the tool: {function_name}",
-            }
-        )
-
-        self.chat_history.append(
-            {
-                "tool_call_id": tool_call_id,
-                "role": "tool",  # Crucially, this must be 'tool'
-                "name": function_name,
-                "content": cancellation_content,
-            }
-        )
-        self.save_session()
-        # No longer calls LLM here; caller (_process_llm_message) will do it.
 
     def _execute_single_tool_call_and_update_history(self) -> bool:
         """
@@ -1068,6 +1455,10 @@ class SessionController:
                 )
             )
 
+        # Update session state with tool results for context-aware recommendations
+        if isinstance(tool_output_dict, dict):
+            self._update_session_state_from_result(tool_output_dict, function_name)
+
         # Add the tool's result to chat history
         self.chat_history.append(
             {
@@ -1155,9 +1546,10 @@ class SessionController:
                     self._execute_single_tool_call_and_update_history()
                 else:
                     if self.pending_tool_call is not None:
-                        tool_call_id = self.pending_tool_call.id
                         function_name = self.pending_tool_call.function.name
-                        self._send_tool_cancellation_to_llm(tool_call_id, function_name)
+                        self.console.print(
+                            f"[yellow]Tool call '{function_name}' cancelled by user.[/yellow]"
+                        )
                         self.pending_tool_call = None
                         ai_response = self._get_llm_response_from_agent()
                         self._process_llm_message(ai_response)

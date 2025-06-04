@@ -1,0 +1,22 @@
+{
+  "timestamp": 1749013157.8151813,
+  "ttl": 1800,
+  "tool_name": "ffuf_dir",
+  "args": {
+    "url": "http://10.10.227.73",
+    "wordlist": "/usr/share/seclists/Discovery/Web-Content/big.txt",
+    "extensions": null,
+    "match_codes": null,
+    "filter_size": null,
+    "threads": 40
+  },
+  "result": {
+    "tool": "ffuf",
+    "mode": "dir_enum",
+    "status": "partial",
+    "findings": [],
+    "scan_summary": "FFUF dir scan results for http://10.10.227.73:",
+    "raw_output": ".htpasswd\n.htaccess\nimages\nserver-status\nspip",
+    "error": "Failed to parse structured JSON output from FFUF. Displaying raw findings."
+  }
+}

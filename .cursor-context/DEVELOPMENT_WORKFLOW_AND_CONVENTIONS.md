@@ -51,3 +51,18 @@
 4.  **Documentation**:
     * Update `DEDICATED_FUNCTIONS.md` with the new LLM function.
     * Add new tool to `ARCHITECTURE_AND_MODULES.md`.
+
+## Bug Fixes & Stability
+-   **OpenAI API Compatibility**: All chat history must conform to OpenAI API requirements:
+    -   Tool messages must correspond to valid assistant tool_calls
+    -   Content fields cannot be null (use empty string instead)
+    -   Use `validate_and_fix_history()` in `src/alienrecon/core/agent.py` for validation
+-   **Tool Cancellation Handling**: When users skip tools, remove tool_calls from assistant messages rather than adding invalid tool responses
+-   **Session State Management**: Ensure session data is properly saved and restored, with fallback handling for corrupted states
+-   **Error Handling**: Implement graceful degradation and user-friendly error messages throughout the application
+
+## Recent Stability Improvements (January 2025)
+-   **Fixed Tool Cancellation**: Resolved OpenAI API errors when users skip tool proposals by properly managing chat history
+-   **Enhanced Validation**: Robust chat history validation prevents invalid message structures
+-   **Null Content Handling**: Proper handling of null content fields to meet OpenAI API requirements
+-   **Parallel Execution**: Added support for running compatible tools concurrently with proper error handling

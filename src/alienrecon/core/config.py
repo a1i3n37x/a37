@@ -19,16 +19,109 @@ if not API_KEY:
     )
     sys.exit(1)
 
-# --- Default Wordlist Configuration (for directory enumeration) ---
+# --- Enhanced Wordlist Configuration ---
 DEFAULT_WORDLIST_PATH_ENV = os.getenv("ALIENRECON_WORDLIST")
+
+# Define named wordlist sets for different purposes
+WORDLIST_SETS = {
+    "directory": {
+        "fast": [
+            "src/alienrecon/wordlists/common.txt",
+            "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            "/usr/share/dirb/wordlists/common.txt",
+        ],
+        "comprehensive": [
+            "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+            "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-big.txt",
+            "/usr/share/dirb/wordlists/big.txt",
+        ],
+        "default": [
+            "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt",
+            "/usr/share/dirb/wordlists/small.txt",
+        ],
+    },
+    "dns": {
+        "fast": [
+            "src/alienrecon/wordlists/dns-fast-clean.txt",
+            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
+        ],
+        "comprehensive": [
+            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt",
+            "/usr/share/seclists/Discovery/DNS/fierce-hostlist.txt",
+        ],
+        "default": [
+            "src/alienrecon/wordlists/dns-fast-clean.txt",
+            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
+        ],
+    },
+    "parameters": {
+        "fast": [
+            "/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt",
+            "/usr/share/seclists/Discovery/Web-Content/api_endpoints.txt",
+        ],
+        "comprehensive": [
+            "/usr/share/seclists/Discovery/Web-Content/raft-large-words.txt",
+            "/usr/share/seclists/Fuzzing/LFI/LFI-gracefulsecurity-linux.txt",
+        ],
+        "default": [
+            "/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt",
+        ],
+    },
+}
+
+
+def find_wordlist(category: str, preference: str = "default") -> str:
+    """
+    Find the best available wordlist for a given category and preference.
+
+    Args:
+        category: Category of wordlist (directory, dns, parameters)
+        preference: Preference level (fast, default, comprehensive)
+
+    Returns:
+        Path to the first available wordlist, or None if none found
+    """
+    if category not in WORDLIST_SETS:
+        logging.warning(f"Unknown wordlist category: {category}")
+        return None
+
+    if preference not in WORDLIST_SETS[category]:
+        logging.warning(
+            f"Unknown preference '{preference}' for category '{category}', using 'default'"
+        )
+        preference = "default"
+
+    wordlist_paths = WORDLIST_SETS[category][preference]
+
+    for path in wordlist_paths:
+        if os.path.exists(path):
+            logging.debug(f"Found {category} wordlist ({preference}): {path}")
+            return path
+
+    # Fallback to other preferences if preferred not found
+    for fallback_pref in ["default", "fast", "comprehensive"]:
+        if fallback_pref != preference and fallback_pref in WORDLIST_SETS[category]:
+            for path in WORDLIST_SETS[category][fallback_pref]:
+                if os.path.exists(path):
+                    logging.info(
+                        f"Using fallback {category} wordlist ({fallback_pref}): {path}"
+                    )
+                    return path
+
+    logging.warning(f"No {category} wordlist found for any preference level")
+    return None
+
+
+# Set default wordlists using the new system
 DEFAULT_WORDLIST = (
     DEFAULT_WORDLIST_PATH_ENV
-    or "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt"
+    if DEFAULT_WORDLIST_PATH_ENV and os.path.exists(DEFAULT_WORDLIST_PATH_ENV)
+    else find_wordlist("directory", "default")
 )
-if not os.path.exists(DEFAULT_WORDLIST):
+
+if not DEFAULT_WORDLIST:
     logging.warning(
-        f"Default wordlist not found at '{DEFAULT_WORDLIST}'. "
-        "Directory enumeration scans might fail or use an internal default unless "
+        "No default directory wordlist found. Directory enumeration scans might fail unless "
         "a wordlist is specified per scan."
     )
 

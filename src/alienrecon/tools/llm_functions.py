@@ -9,11 +9,10 @@ and intelligent defaults.
 """
 
 import logging
-import os
 from typing import Optional, Union
 
 from ..core.cache import cache_result
-from ..core.config import DEFAULT_WORDLIST
+from ..core.config import DEFAULT_WORDLIST, find_wordlist
 from .ffuf import FFUFTool
 from .http_ssl_probe import HTTPSSLProbeTool
 from .nikto import NiktoTool
@@ -22,10 +21,184 @@ from .ssl_inspector import SSLInspectorTool
 
 logger = logging.getLogger(__name__)
 
-# Determine default common wordlist (common.txt) alongside DEFAULT_WORDLIST
-DEFAULT_COMMON_WORDLIST = os.path.join(
-    os.path.dirname(DEFAULT_WORDLIST) if DEFAULT_WORDLIST else "", "common.txt"
-)
+# Determine default common wordlist using the enhanced wordlist system
+DEFAULT_COMMON_WORDLIST = find_wordlist("directory", "fast") or DEFAULT_WORDLIST
+
+
+def _create_enhanced_error_response(tool_name, mode, error_msg, suggestions=None):
+    """
+    Create an enhanced error response with context-aware suggestions for troubleshooting.
+
+    Args:
+        tool_name: Name of the tool that failed
+        mode: Mode/operation that was attempted
+        error_msg: The original error message
+        suggestions: List of specific troubleshooting suggestions
+
+    Returns:
+        Dict with enhanced error information and guidance
+    """
+    base_response = {
+        "tool": tool_name,
+        "mode": mode,
+        "status": "failure",
+        "error": error_msg,
+        "findings": [],
+    }
+
+    # Add context-aware suggestions based on common error patterns
+    common_suggestions = []
+    error_lower = error_msg.lower()
+
+    if "executable not found" in error_lower or "command not found" in error_lower:
+        common_suggestions.extend(
+            [
+                f"Install {tool_name} using your package manager (e.g., apt install {tool_name.lower()})",
+                f"Verify {tool_name} is in your PATH by running 'which {tool_name.lower()}'",
+                "Check the tool installation guide in the project documentation",
+            ]
+        )
+    elif "connection refused" in error_lower or "connection timed out" in error_lower:
+        common_suggestions.extend(
+            [
+                "Verify the target is reachable (try ping first)",
+                "Check if the target port is actually open",
+                "Consider adjusting timeout values if the target is slow to respond",
+                "Verify network connectivity and firewall rules",
+            ]
+        )
+    elif "permission denied" in error_lower or "privilege" in error_lower:
+        common_suggestions.extend(
+            [
+                "Try running the command with elevated privileges (sudo)",
+                "Some Nmap features (like OS detection) require root privileges",
+                "Check file permissions for wordlists and configuration files",
+            ]
+        )
+    elif "timeout" in error_lower:
+        common_suggestions.extend(
+            [
+                "Increase the timeout value in the function parameters",
+                "Try reducing the thread count to avoid overwhelming the target",
+                "Consider using a more conservative timing template (e.g., T3 instead of T4)",
+            ]
+        )
+    elif "wordlist" in error_lower or "file not found" in error_lower:
+        common_suggestions.extend(
+            [
+                "Verify the wordlist path is correct and the file exists",
+                "Try using the default wordlist by omitting the wordlist parameter",
+                "Check available wordlists in the src/alienrecon/wordlists/ directory",
+            ]
+        )
+
+    # Add mode-specific suggestions
+    if suggestions:
+        common_suggestions.extend(suggestions)
+
+    if common_suggestions:
+        base_response["ai_guidance"] = {
+            "troubleshooting_steps": common_suggestions,
+            "context": f"The {tool_name} {mode} operation failed. Here are some common solutions to try:",
+        }
+
+    return base_response
+
+
+# =============================================================================
+# PLAN MANAGEMENT HELPER FUNCTIONS
+# =============================================================================
+
+# These functions need access to the SessionController instance
+# They will be called via the session context
+_session_controller = None
+
+
+def _set_session_controller(session_controller):
+    """Set the session controller for plan management functions."""
+    global _session_controller
+    _session_controller = session_controller
+
+
+def _create_plan_with_session(
+    plan_name: str, steps: list[dict], description: str = ""
+) -> dict:
+    """Create a reconnaissance plan using the session controller."""
+    if not _session_controller:
+        return {
+            "status": "failure",
+            "error": "Session controller not available for plan management",
+        }
+
+    try:
+        plan_id = _session_controller.create_reconnaissance_plan(
+            plan_name, steps, description
+        )
+        return {
+            "status": "success",
+            "plan_id": plan_id,
+            "plan_name": plan_name,
+            "total_steps": len(steps),
+            "message": f"Created reconnaissance plan '{plan_name}' with {len(steps)} steps. Plan ID: {plan_id}",
+        }
+    except Exception as e:
+        logger.error(f"Error creating plan: {e}")
+        return {"status": "failure", "error": f"Failed to create plan: {str(e)}"}
+
+
+def _execute_next_plan_step_with_session() -> dict:
+    """Execute the next step in the current plan."""
+    if not _session_controller:
+        return {
+            "status": "failure",
+            "error": "Session controller not available for plan execution",
+        }
+
+    try:
+        success = _session_controller.execute_next_plan_step()
+        if success:
+            return {"status": "success", "message": "Plan step executed successfully"}
+        else:
+            return {
+                "status": "completed",
+                "message": "Plan execution completed or no active plan",
+            }
+    except Exception as e:
+        logger.error(f"Error executing plan step: {e}")
+        return {"status": "failure", "error": f"Failed to execute plan step: {str(e)}"}
+
+
+def _get_plan_status_with_session() -> dict:
+    """Get the current plan status."""
+    if not _session_controller:
+        return {"status": "failure", "error": "Session controller not available"}
+
+    try:
+        plan_summary = _session_controller.get_plan_summary()
+        plan_status = _session_controller.get_plan_status()
+
+        return {
+            "status": "success",
+            "plan_summary": plan_summary,
+            "plan_details": plan_status,
+        }
+    except Exception as e:
+        logger.error(f"Error getting plan status: {e}")
+        return {"status": "failure", "error": f"Failed to get plan status: {str(e)}"}
+
+
+def _cancel_plan_with_session() -> dict:
+    """Cancel the current plan."""
+    if not _session_controller:
+        return {"status": "failure", "error": "Session controller not available"}
+
+    try:
+        _session_controller.cancel_current_plan()
+        return {"status": "success", "message": "Current reconnaissance plan cancelled"}
+    except Exception as e:
+        logger.error(f"Error cancelling plan: {e}")
+        return {"status": "failure", "error": f"Failed to cancel plan: {str(e)}"}
+
 
 # =============================================================================
 # FFUF Functions (To be implemented when FFUF tool is created)
@@ -60,13 +233,24 @@ def ffuf_vhost_enum(
     try:
         ffuf = FFUFTool()
         if not ffuf.executable_path:
-            return {
-                "tool": "ffuf",
-                "mode": "vhost_enum",
-                "status": "failure",
-                "error": "FFUF executable not found",
-                "findings": [],
-            }
+            return _create_enhanced_error_response(
+                "ffuf", "vhost_enum", "FFUF executable not found"
+            )
+
+        # Use intelligent wordlist selection if none provided
+        if not wordlist:
+            wordlist = find_wordlist("dns", "fast")
+            if not wordlist:
+                return _create_enhanced_error_response(
+                    "ffuf",
+                    "vhost_enum",
+                    "No suitable DNS wordlist found",
+                    [
+                        "Install SecLists package for comprehensive wordlists",
+                        "Specify a custom wordlist path in the wordlist parameter",
+                        "Check that src/alienrecon/wordlists/dns-fast-clean.txt exists",
+                    ],
+                )
 
         # Execute the scan
         result = ffuf.execute(
@@ -100,13 +284,7 @@ def ffuf_vhost_enum(
 
     except Exception as e:
         logger.error(f"Error in ffuf_vhost_enum: {e}")
-        return {
-            "tool": "ffuf",
-            "mode": "vhost_enum",
-            "status": "failure",
-            "error": str(e),
-            "findings": [],
-        }
+        return _create_enhanced_error_response("ffuf", "vhost_enum", str(e))
 
 
 @cache_result(ttl=1800)  # 30 minute cache for directory enumeration
@@ -135,13 +313,9 @@ def ffuf_dir_enum(
     try:
         ffuf = FFUFTool()
         if not ffuf.executable_path:
-            return {
-                "tool": "ffuf",
-                "mode": "dir_enum",
-                "status": "failure",
-                "error": "FFUF executable not found",
-                "findings": [],
-            }
+            return _create_enhanced_error_response(
+                "ffuf", "dir_enum", "FFUF executable not found"
+            )
 
         if match_codes is None:
             match_codes = [200, 301, 403]
@@ -185,13 +359,7 @@ def ffuf_dir_enum(
 
     except Exception as e:
         logger.error(f"Error in ffuf_dir_enum: {e}")
-        return {
-            "tool": "ffuf",
-            "mode": "dir_enum",
-            "status": "failure",
-            "error": str(e),
-            "findings": [],
-        }
+        return _create_enhanced_error_response("ffuf", "dir_enum", str(e))
 
 
 def ffuf_param_fuzz(
@@ -217,13 +385,9 @@ def ffuf_param_fuzz(
     try:
         ffuf = FFUFTool()
         if not ffuf.executable_path:
-            return {
-                "tool": "ffuf",
-                "mode": "param_fuzz",
-                "status": "failure",
-                "error": "FFUF executable not found",
-                "findings": [],
-            }
+            return _create_enhanced_error_response(
+                "ffuf", "param_fuzz", "FFUF executable not found"
+            )
 
         # Ensure URL has parameter placeholder
         if "FUZZ" not in url:
@@ -262,13 +426,95 @@ def ffuf_param_fuzz(
 
     except Exception as e:
         logger.error(f"Error in ffuf_param_fuzz: {e}")
+        return _create_enhanced_error_response("ffuf", "param_fuzz", str(e))
+
+
+@cache_result(ttl=1800)  # 30 minute cache for POST data fuzzing
+def ffuf_post_data_fuzz(
+    url: str,
+    post_data_template: str,
+    wordlist: Optional[str] = None,
+    content_type: str = "application/x-www-form-urlencoded",
+    match_codes: Optional[list[int]] = None,
+    filter_size: Optional[int] = None,
+    threads: int = 40,
+) -> dict:
+    """
+    Fuzz POST data by replacing FUZZ placeholder in the data template.
+
+    Args:
+        url: Target URL for POST requests
+        post_data_template: POST data template with FUZZ placeholder (e.g., "username=admin&password=FUZZ")
+        wordlist: Path to wordlist for fuzzing values
+        content_type: Content-Type header for POST requests
+        match_codes: HTTP status codes to include (default: [200, 301, 302, 403])
+        filter_size: Filter out responses of this size
+        threads: Number of concurrent threads
+
+    Returns:
+        Dict with parsed findings, including interesting POST data values
+    """
+    try:
+        ffuf = FFUFTool()
+        if not ffuf.executable_path:
+            return _create_enhanced_error_response(
+                "ffuf", "post_data_fuzz", "FFUF executable not found"
+            )
+
+        if "FUZZ" not in post_data_template:
+            return _create_enhanced_error_response(
+                "ffuf",
+                "post_data_fuzz",
+                "POST data template must contain FUZZ placeholder",
+                [
+                    "Ensure your post_data_template includes 'FUZZ' where you want to insert fuzzing values"
+                ],
+            )
+
+        if match_codes is None:
+            match_codes = [200, 301, 302, 403]
+
+        # Execute the scan
+        result = ffuf.execute(
+            mode="post",
+            url=url,
+            post_data=post_data_template,
+            wordlist=wordlist,
+            content_type=content_type,
+            match_codes=match_codes,
+            filter_size=filter_size,
+            threads=threads,
+        )
+
+        # Parse and structure the response
+        findings = []
+        if result.get("status") == "success" and "findings" in result:
+            post_results = result["findings"].get("post_data", [])
+            findings = [
+                {
+                    "payload": item.get("payload", ""),
+                    "status_code": item.get("status_code"),
+                    "size": item.get("size"),
+                    "response_time": item.get("response_time"),
+                }
+                for item in post_results
+            ]
+
         return {
             "tool": "ffuf",
-            "mode": "param_fuzz",
-            "status": "failure",
-            "error": str(e),
-            "findings": [],
+            "mode": "post_data_fuzz",
+            "status": result.get("status", "unknown"),
+            "findings": findings,
+            "scan_summary": result.get("scan_summary", ""),
+            "raw_output": result.get("raw_stdout", "")[:1000]
+            if result.get("raw_stdout")
+            else None,
+            "error": result.get("error"),
         }
+
+    except Exception as e:
+        logger.error(f"Error in ffuf_post_data_fuzz: {e}")
+        return _create_enhanced_error_response("ffuf", "post_data_fuzz", str(e))
 
 
 # =============================================================================
@@ -299,13 +545,9 @@ def nmap_scan(
     try:
         nmap_tool = NmapTool()
         if not nmap_tool.executable_path:
-            return {
-                "tool": "nmap",
-                "mode": "flexible_scan",
-                "status": "failure",
-                "error": "Nmap executable not found",
-                "findings": {},
-            }
+            return _create_enhanced_error_response(
+                "nmap", "flexible_scan", "Nmap executable not found"
+            )
 
         args_list = []
 
@@ -400,13 +642,7 @@ def nmap_scan(
 
     except Exception as e:
         logger.error(f"Error in nmap_scan function: {e}", exc_info=True)
-        return {
-            "tool": "nmap",
-            "mode": "flexible_scan",
-            "status": "failure",
-            "error": str(e),
-            "findings": {},
-        }
+        return _create_enhanced_error_response("nmap", "flexible_scan", str(e))
 
 
 # =============================================================================
@@ -432,13 +668,9 @@ def nikto_scan(
     try:
         nikto_tool = NiktoTool()
         if not nikto_tool.executable_path:
-            return {
-                "tool": "nikto",
-                "mode": "vulnerability_scan",
-                "status": "failure",
-                "error": "Nikto executable not found",
-                "findings": [],
-            }
+            return _create_enhanced_error_response(
+                "nikto", "vulnerability_scan", "Nikto executable not found"
+            )
 
         # If it looks like a URL, parse it
         if ip_or_url.startswith(("http://", "https://")):
@@ -486,13 +718,7 @@ def nikto_scan(
 
     except Exception as e:
         logger.error(f"Error in nikto_scan: {e}")
-        return {
-            "tool": "nikto",
-            "mode": "vulnerability_scan",
-            "status": "failure",
-            "error": str(e),
-            "findings": [],
-        }
+        return _create_enhanced_error_response("nikto", "vulnerability_scan", str(e))
 
 
 # =============================================================================
@@ -526,13 +752,11 @@ def inspect_ssl_certificate(
     try:
         ssl_inspector = SSLInspectorTool()
         if not ssl_inspector.executable_path:
-            return {
-                "tool": "ssl_inspector",
-                "mode": "certificate_inspection",
-                "status": "failure",
-                "error": "OpenSSL executable not found",
-                "findings": [],
-            }
+            return _create_enhanced_error_response(
+                "ssl_inspector",
+                "certificate_inspection",
+                "OpenSSL executable not found",
+            )
 
         # Execute the SSL certificate inspection
         result = ssl_inspector.execute(
@@ -573,13 +797,9 @@ def inspect_ssl_certificate(
 
     except Exception as e:
         logger.error(f"Error in inspect_ssl_certificate: {e}")
-        return {
-            "tool": "ssl_inspector",
-            "mode": "certificate_inspection",
-            "status": "failure",
-            "error": str(e),
-            "findings": {},
-        }
+        return _create_enhanced_error_response(
+            "ssl_inspector", "certificate_inspection", str(e)
+        )
 
 
 @cache_result(ttl=1800)  # 30 minute cache for HTTP SSL probes
@@ -608,13 +828,9 @@ def probe_ssl_errors(
     try:
         probe = HTTPSSLProbeTool()
         if not probe.executable_path:
-            return {
-                "tool": "http_ssl_probe",
-                "mode": "ssl_error_capture",
-                "status": "failure",
-                "error": "curl executable not found",
-                "findings": {},
-            }
+            return _create_enhanced_error_response(
+                "http_ssl_probe", "ssl_error_capture", "curl executable not found"
+            )
 
         # Execute the probe
         result = probe.execute(
@@ -665,13 +881,9 @@ def probe_ssl_errors(
 
     except Exception as e:
         logger.error(f"Error in probe_ssl_errors: {e}")
-        return {
-            "tool": "http_ssl_probe",
-            "mode": "ssl_error_capture",
-            "status": "failure",
-            "error": str(e),
-            "findings": {},
-        }
+        return _create_enhanced_error_response(
+            "http_ssl_probe", "ssl_error_capture", str(e)
+        )
 
 
 # =============================================================================
@@ -746,6 +958,71 @@ LLM_TOOL_FUNCTIONS = {
             },
         },
         "required": ["url"],
+    },
+    "ffuf_param_fuzz": {
+        "function": ffuf_param_fuzz,
+        "description": "Fuzz a specific parameter for common values using GET or POST method.",
+        "parameters": {
+            "url": {
+                "type": "string",
+                "description": "Target URL with parameter placeholder or base URL",
+            },
+            "param_name": {
+                "type": "string",
+                "description": "Name of the parameter to fuzz",
+            },
+            "wordlist": {
+                "type": "string",
+                "description": "Path to parameter values wordlist (optional)",
+            },
+            "method": {
+                "type": "string",
+                "description": "HTTP method (GET or POST)",
+                "enum": ["GET", "POST"],
+                "default": "GET",
+            },
+            "threads": {
+                "type": "integer",
+                "description": "Number of concurrent threads",
+                "default": 40,
+            },
+        },
+        "required": ["url", "param_name"],
+    },
+    "ffuf_post_data_fuzz": {
+        "function": ffuf_post_data_fuzz,
+        "description": "Fuzz POST data by replacing FUZZ placeholder in the data template. Useful for login forms, API endpoints, and form parameter testing.",
+        "parameters": {
+            "url": {"type": "string", "description": "Target URL for POST requests"},
+            "post_data_template": {
+                "type": "string",
+                "description": "POST data template with FUZZ placeholder (e.g., 'username=admin&password=FUZZ' or '{\"password\":\"FUZZ\"}')",
+            },
+            "wordlist": {
+                "type": "string",
+                "description": "Path to wordlist for fuzzing values (optional)",
+            },
+            "content_type": {
+                "type": "string",
+                "description": "Content-Type header for POST requests",
+                "default": "application/x-www-form-urlencoded",
+            },
+            "match_codes": {
+                "type": "array",
+                "description": "HTTP status codes to include (optional)",
+                "items": {"type": "integer"},
+            },
+            "filter_size": {
+                "type": "integer",
+                "description": "Filter out responses of this size (optional)",
+            },
+            "threads": {
+                "type": "integer",
+                "description": "Number of concurrent threads",
+                "default": 40,
+            },
+        },
+        "required": ["url", "post_data_template"],
     },
     # Nmap functions (REPLACED)
     "nmap_scan": {
@@ -888,5 +1165,79 @@ LLM_TOOL_FUNCTIONS = {
             },
         },
         "required": ["url"],
+    },
+    # Plan Management functions
+    "create_recon_plan": {
+        "function": lambda plan_name, steps, description="": _create_plan_with_session(
+            plan_name, steps, description
+        ),
+        "description": "Create a multi-step reconnaissance plan that can be executed in sequence. Use this when the user wants to queue up multiple tools to run automatically based on previous results. Each step can have conditions that determine whether it should be executed based on findings from earlier steps.",
+        "parameters": {
+            "plan_name": {
+                "type": "string",
+                "description": "Name for the reconnaissance plan (e.g., 'Web Service Deep Dive', 'SMB Enumeration Sequence')",
+            },
+            "steps": {
+                "type": "array",
+                "description": "Array of step objects defining the reconnaissance sequence",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {
+                            "type": "string",
+                            "description": "Name of the tool function to execute (e.g., 'nmap_scan', 'ffuf_dir_enum')",
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Arguments to pass to the tool function",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description of what this step does",
+                        },
+                        "conditions": {
+                            "type": "object",
+                            "description": "Optional conditions that must be met for this step to execute",
+                            "properties": {
+                                "requires_open_ports": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "description": "List of ports that must be open for this step to execute",
+                                },
+                                "requires_previous_findings": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "List of keywords that must be found in previous step results",
+                                },
+                            },
+                        },
+                    },
+                    "required": ["function_name", "arguments", "description"],
+                },
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional description of the overall plan and its goals",
+            },
+        },
+        "required": ["plan_name", "steps"],
+    },
+    "execute_plan_step": {
+        "function": lambda: _execute_next_plan_step_with_session(),
+        "description": "Execute the next step in the current reconnaissance plan. Use this to continue a multi-step plan that was previously created.",
+        "parameters": {},
+        "required": [],
+    },
+    "get_plan_status": {
+        "function": lambda: _get_plan_status_with_session(),
+        "description": "Get the status of the current reconnaissance plan, including which steps have been completed and what's next.",
+        "parameters": {},
+        "required": [],
+    },
+    "cancel_current_plan": {
+        "function": lambda: _cancel_plan_with_session(),
+        "description": "Cancel the current reconnaissance plan. Use this if the user wants to stop the planned sequence.",
+        "parameters": {},
+        "required": [],
     },
 }
