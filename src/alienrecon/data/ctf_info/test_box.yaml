@@ -1,0 +1,11 @@
+# CTF Box Metadata: Test Box for Development
+box_name: "Test Development Box"
+platform: "Local Testing"
+expected_key_services:
+  - "SSH"
+  - "HTTP"
+notes_template_path: "ctf_notes_template.md"
+description: |
+  A simple test box for development and testing of the a37 init --ctf functionality.
+difficulty: "Test"
+estimated_time: "Variable"

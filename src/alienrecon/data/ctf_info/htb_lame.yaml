@@ -1,0 +1,23 @@
+# CTF Box Metadata: Hack The Box Lame
+box_name: "Lame"
+platform: "Hack The Box"
+vpn_instructions_url: "https://help.hackthebox.com/en/articles/5185687-introduction-to-lab-access"
+expected_key_services:
+  - "FTP"
+  - "SSH"
+  - "Netbios"
+  - "SMB"
+notes_template_path: "ctf_notes_template.md"
+description: |
+  Classic beginner machine focusing on service enumeration and exploitation.
+  Great introduction to SMB vulnerabilities and basic exploitation techniques.
+difficulty: "Easy"
+estimated_time: "30-60 minutes"
+learning_objectives:
+  - "Service version detection and vulnerability research"
+  - "SMB enumeration and exploitation"
+  - "Understanding CVE exploitation"
+hints:
+  - "Focus on service versions during enumeration"
+  - "Some services might have well-known vulnerabilities"
+  - "Research CVEs for older service versions"

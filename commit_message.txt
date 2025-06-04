@@ -1,0 +1,37 @@
+This commit introduces the 'a37 init --ctf <box_identifier>' command,
+a key feature for Phase 4: Boot Sequence: Zero-to-First-Blood.
+It streamlines the initial setup for CTF challenges by creating a
+dedicated mission environment.
+
+Key additions and changes:
+
+- **CLI Enhancement (`cli.py`):**
+    - Modified the existing `init` command to accept a `--ctf <identifier>` option.
+    - Added `_init_ctf_environment()` for CTF-specific initialization logic.
+    - Implemented graceful error handling for missing metadata and invalid identifiers, including listing available CTF boxes.
+
+- **CTF Metadata System (`src/alienrecon/data/ctf_info/`):**
+    - Introduced a YAML-based metadata structure for defining CTF box details (name, platform, VPN URL, expected services, notes template path).
+    - Added sample metadata files (e.g., `thm_basic_pentesting.yaml`, `htb_lame.yaml`).
+
+- **Mission Folder & Notes Template (`src/alienrecon/data/templates/`):**
+    - Creates an organized mission folder: `./a37_missions/<box_identifier>/`.
+    - Copies a comprehensive `ctf_notes_template.md` into the mission folder.
+
+- **Dynamic IP Handling & Session Context (`core/session.py`):**
+    - The `init --ctf` command correctly does NOT set a target IP, accommodating dynamic IP assignment on CTF platforms.
+    - Introduces `active_ctf_context` in the session state to store loaded CTF box metadata.
+    - Added `set_ctf_context()`, `get_ctf_context()`, `clear_ctf_context()` methods to `SessionController`.
+    - Session status display and AI context summary now reflect active CTF mission.
+
+- **User Experience:**
+    - Provides rich console output with panels and colors.
+    - Displays VPN setup URLs and expected key services from metadata to guide the user.
+
+- **Testing:**
+    - Added new test files: `test_init_ctf.py` (unit tests) and `test_init_integration.py` (end-to-end tests).
+
+- **Dependencies:**
+    - Added `pyyaml` for YAML parsing to `pyproject.toml`.
+
+This feature significantly improves the onboarding experience for users starting a new CTF, preparing their workspace and providing initial context for both the user and the AI assistant.

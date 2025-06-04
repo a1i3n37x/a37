@@ -1,10 +1,13 @@
 # src/alienrecon/cli.py
 import logging
 import os
+import shutil
+from pathlib import Path
 from typing import Optional
 
 import openai
 import typer
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 
@@ -59,10 +62,27 @@ def main(ctx: typer.Context):
 
 
 @app.command()
-def init():
+def init(
+    ctf: Optional[str] = typer.Option(
+        None,
+        "--ctf",
+        help="Initialize a CTF box environment using the specified box identifier (e.g., 'thm_basic_pentesting')",
+    ),
+):
     """
-    Initialize Alien Recon workspace (creates .alienrecon/ directory).
+    Initialize Alien Recon workspace or a specific CTF box environment.
+
+    Without --ctf: Creates the basic .alienrecon/ workspace directory.
+    With --ctf: Sets up a mission folder and context for the specified CTF box.
     """
+    if ctf:
+        _init_ctf_environment(ctf)
+    else:
+        _init_workspace()
+
+
+def _init_workspace():
+    """Initialize basic Alien Recon workspace."""
     workspace_dir = ".alienrecon"
     if not os.path.exists(workspace_dir):
         os.makedirs(workspace_dir)
@@ -74,6 +94,109 @@ def init():
             f"[yellow]Workspace directory already exists: {workspace_dir}[/yellow]"
         )
     module_logger.info("`init` command executed.")
+
+
+def _init_ctf_environment(box_identifier: str):
+    """Initialize CTF box environment with metadata and mission folder."""
+    try:
+        # Get package directory to find CTF metadata
+        package_dir = Path(__file__).parent
+        ctf_data_dir = package_dir / "data" / "ctf_info"
+        templates_dir = package_dir / "data" / "templates"
+
+        # Look for metadata file
+        metadata_file = ctf_data_dir / f"{box_identifier}.yaml"
+        if not metadata_file.exists():
+            cli_console.print(
+                f"[red]Error: CTF metadata file not found: {metadata_file}[/red]"
+            )
+            cli_console.print("[yellow]Available CTF boxes:[/yellow]")
+            if ctf_data_dir.exists():
+                for yaml_file in ctf_data_dir.glob("*.yaml"):
+                    box_name = yaml_file.stem
+                    cli_console.print(f"  - {box_name}")
+            else:
+                cli_console.print("  [dim]No CTF metadata files found[/dim]")
+            return
+
+        # Load CTF metadata
+        with open(metadata_file) as f:
+            metadata = yaml.safe_load(f)
+
+        # Create mission folder
+        mission_folder = Path(f"./a37_missions/{box_identifier}")
+        mission_folder.mkdir(parents=True, exist_ok=True)
+
+        cli_console.print(f"[green]Created mission folder:[/green] {mission_folder}")
+
+        # Display CTF information
+        box_name = metadata.get("box_name", box_identifier)
+        platform = metadata.get("platform", "Unknown")
+        cli_console.print(
+            Panel.fit(
+                f"[bold cyan]CTF Box Initialized[/bold cyan]\n"
+                f"Box: [bold]{box_name}[/bold]\n"
+                f"Platform: {platform}\n"
+                f"Mission Folder: {mission_folder}",
+                border_style="cyan",
+                title="🚀 Mission Started",
+            )
+        )
+
+        # Display VPN instructions if present
+        vpn_url = metadata.get("vpn_instructions_url")
+        if vpn_url:
+            cli_console.print(
+                Panel.fit(
+                    f"[yellow]🔧 VPN Setup Required[/yellow]\n"
+                    f"Please set up your VPN connection before proceeding:\n"
+                    f"[link={vpn_url}]{vpn_url}[/link]",
+                    border_style="yellow",
+                )
+            )
+
+        # Copy notes template if specified
+        notes_template_path = metadata.get("notes_template_path")
+        if notes_template_path:
+            template_file = templates_dir / notes_template_path
+            if template_file.exists():
+                target_notes = mission_folder / "notes.md"
+                shutil.copy2(template_file, target_notes)
+                cli_console.print(
+                    f"[green]Copied notes template to:[/green] {target_notes}"
+                )
+            else:
+                cli_console.print(
+                    f"[yellow]Warning: Notes template not found: {template_file}[/yellow]"
+                )
+
+        # Display expected services hint if available
+        expected_services = metadata.get("expected_key_services", [])
+        if expected_services:
+            services_text = ", ".join(expected_services)
+            cli_console.print(f"[dim]💡 Expected key services: {services_text}[/dim]")
+
+        # Update session controller with CTF context
+        sc = SessionController()
+        sc.set_ctf_context(metadata, box_identifier)
+        sc.save_session()
+
+        cli_console.print(
+            "\n[bold green]✅ CTF environment ready![/bold green]\n"
+            "[dim]Next steps:[/dim]\n"
+            f"  1. [cyan]cd {mission_folder}[/cyan]  # Navigate to mission folder\n"
+            "  2. [cyan]alienrecon recon --target <TARGET_IP>[/cyan]  # Start reconnaissance with your target IP\n"
+            "     [dim](or [cyan]poetry run alienrecon recon --target <TARGET_IP>[/cyan] if using Poetry)[/dim]\n"
+            "  3. Take notes in notes.md as you progress"
+        )
+
+        module_logger.info(
+            f"`init --ctf {box_identifier}` command executed successfully."
+        )
+
+    except Exception as e:
+        cli_console.print(f"[red]Error initializing CTF environment: {e}[/red]")
+        module_logger.error(f"Error in _init_ctf_environment: {e}", exc_info=True)
 
 
 @app.command()

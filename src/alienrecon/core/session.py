@@ -69,6 +69,7 @@ class SessionController:
             "open_ports": [],  # List of {"port": int, "service": str, "version": str}
             "discovered_subdomains": [],
             "web_findings": {},  # E.g. {"http://target:port/path": {"tech": [], "interesting_files": []}}
+            "active_ctf_context": None,  # CTF box metadata and context
         }
 
         self.nmap_tool: Optional[NmapTool] = None
@@ -254,6 +255,23 @@ class SessionController:
             if web_services:
                 context_parts.append(
                     f"Web services enumerated: {', '.join(web_services[:2])}"
+                )
+
+        # Include CTF context if available
+        ctf_context = self.get_ctf_context()
+        if ctf_context:
+            metadata = ctf_context.get("metadata", {})
+            box_name = metadata.get(
+                "box_name", ctf_context.get("box_identifier", "Unknown")
+            )
+            platform = metadata.get("platform", "Unknown")
+            context_parts.append(f"CTF Mission: {box_name} ({platform})")
+
+            # Include expected services if available
+            expected_services = metadata.get("expected_key_services", [])
+            if expected_services:
+                context_parts.append(
+                    f"Expected services: {', '.join(expected_services)}"
                 )
 
         # Include plan status if available
@@ -526,6 +544,17 @@ class SessionController:
                 "[bold]🔑 Hydra Password List:[/bold] [red]Not Set/Found - User/AI must specify[/red]"
             )
 
+        # Add CTF context if available
+        ctf_context = self.get_ctf_context()
+        if ctf_context:
+            metadata = ctf_context.get("metadata", {})
+            box_name = metadata.get(
+                "box_name", ctf_context.get("box_identifier", "Unknown")
+            )
+            platform = metadata.get("platform", "Unknown")
+            ctf_status = f"[bold]🎮 CTF Mission:[/bold] [bold cyan]{box_name}[/bold cyan] ([green]{platform}[/green])"
+            status_lines.append(ctf_status)
+
         # Add plan status if available
         if self.current_plan:
             plan = self.current_plan
@@ -690,6 +719,46 @@ class SessionController:
             self.console.print(
                 f"[cyan]Guidance mode is already [bold]{mode_text}[/bold].[/cyan]"
             )
+
+    def set_ctf_context(self, metadata: dict, box_identifier: str):
+        """
+        Set CTF box context for the session without setting a target IP.
+        This stores metadata that can be used to provide context to the AI.
+
+        Args:
+            metadata: CTF box metadata loaded from YAML file
+            box_identifier: The box identifier used to initialize the CTF
+        """
+        ctf_context = {
+            "box_identifier": box_identifier,
+            "metadata": metadata,
+            "mission_folder": f"./a37_missions/{box_identifier}",
+            "initialized_at": datetime.now().isoformat(),
+        }
+
+        self.state["active_ctf_context"] = ctf_context
+
+        logger.info(f"CTF context set for box: {box_identifier}")
+
+        # Display context in console
+        box_name = metadata.get("box_name", box_identifier)
+        platform = metadata.get("platform", "Unknown")
+        self.console.print(
+            f"[bold cyan]CTF Context Set:[/bold cyan] {box_name} ({platform})"
+        )
+
+    def get_ctf_context(self) -> Optional[dict]:
+        """Get the current CTF context if set."""
+        return self.state.get("active_ctf_context")
+
+    def clear_ctf_context(self):
+        """Clear the current CTF context."""
+        if self.state.get("active_ctf_context"):
+            box_id = self.state["active_ctf_context"].get("box_identifier", "unknown")
+            self.state["active_ctf_context"] = None
+            self.console.print(f"[yellow]CTF context cleared for: {box_id}[/yellow]")
+            logger.info(f"CTF context cleared for: {box_id}")
+            self.save_session()
 
     def start_interactive_recon_session(self):
         # ASCII Art Banner (Alien/Space/CTF theme)

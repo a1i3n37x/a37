@@ -1,0 +1,33 @@
+{
+  "current_target": null,
+  "chat_history": [],
+  "is_novice_mode": true,
+  "state": {
+    "target_ip": null,
+    "target_hostname": null,
+    "open_ports": [],
+    "discovered_subdomains": [],
+    "web_findings": {},
+    "active_ctf_context": {
+      "box_identifier": "test_box",
+      "metadata": {
+        "box_name": "Test Development Box",
+        "platform": "Local Testing",
+        "expected_key_services": [
+          "SSH",
+          "HTTP"
+        ],
+        "notes_template_path": "ctf_notes_template.md",
+        "description": "A simple test box for development and testing of the a37 init --ctf functionality.\n",
+        "difficulty": "Test",
+        "estimated_time": "Variable"
+      },
+      "mission_folder": "./a37_missions/test_box",
+      "initialized_at": "2025-06-04T03:24:42.294227"
+    }
+  },
+  "task_queue": [],
+  "current_plan": null,
+  "plan_history": [],
+  "auto_execution_mode": false
+}
