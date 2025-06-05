@@ -76,6 +76,22 @@ alienrecon
 > target 192.168.1.100
 ```
 
+### 🚀 Quick-Recon: Zero-to-Results Fast Track
+
+For beginners or when you need results fast, use the quick-recon command that runs a predefined reconnaissance sequence:
+
+```sh
+# Execute standardized recon sequence with guided confirmation
+alienrecon quick-recon --target 10.10.10.10
+```
+
+**What it does:**
+1. **Initial Port Scan** - Fast SYN scan on top 1000 ports with `-Pn` flag
+2. **Service Detection** - Detailed version detection on discovered open ports  
+3. **Web Enumeration** - Automatic directory fuzzing and vulnerability scanning on HTTP/HTTPS services
+
+Each step requires your confirmation and shows educational parameter explanations. Perfect for CTF beginners who want to learn while getting comprehensive results quickly.
+
 #### Example Conversations:
 
 **Basic Reconnaissance:**

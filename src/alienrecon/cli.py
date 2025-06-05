@@ -419,6 +419,53 @@ def recon(
 
 
 @app.command()
+def quick_recon(
+    target_address: str = typer.Option(
+        ...,
+        "--target",
+        "-t",
+        help="Target IP address for the quick reconnaissance sequence",
+    ),
+):
+    """
+    Perform a standardized quick reconnaissance sequence on a target.
+    
+    This command executes a predefined, beginner-friendly reconnaissance workflow:
+    1. Initial Nmap SYN scan (top 1000 ports)
+    2. Service detection scan on discovered open ports
+    3. Directory enumeration on discovered web services
+    4. Nikto vulnerability scan on discovered web services
+    
+    Each step requires user confirmation before execution, maintaining educational value.
+    """
+    try:
+        from alienrecon.core.session import SessionController
+        
+        sc = SessionController()
+        sc.set_target(target_address)
+        sc.set_novice_mode(True)  # Quick recon is designed for beginners
+        
+        cli_console.print(
+            Panel.fit(
+                f"[bold cyan]🚀 Quick Reconnaissance Starting[/bold cyan]\n"
+                f"Target: [bold]{target_address}[/bold]\n"
+                f"Mode: Guided beginner sequence\n\n"
+                f"[dim]This will execute a predefined reconnaissance workflow.[/dim]\n"
+                f"[dim]Each step requires your confirmation before execution.[/dim]",
+                border_style="cyan",
+                title="Quick Recon",
+            )
+        )
+        
+        # Execute the quick recon sequence
+        sc.execute_quick_recon_sequence()
+        
+    except Exception as e:
+        cli_console.print(f"[red]Error during quick reconnaissance: {e}[/red]")
+        module_logger.error(f"Error in quick_recon command: {e}", exc_info=True)
+
+
+@app.command()
 def doctor():
     """
     Run a self-test to check tool dependencies, API connectivity, and environment health.

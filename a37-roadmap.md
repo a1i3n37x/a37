@@ -13,7 +13,8 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
 - ✅ **Stability improvements: Fixed tool cancellation API errors, enhanced chat history validation.**
 - ✅ **Parallel execution support for compatible reconnaissance tools.**
 - ✅ **Phase 4 Feature 1: `a37 init --ctf` command COMPLETE!** Full CTF box initialization with metadata, mission folders, templates, and session context.
-- 🟢 **Phase 4 in progress: Working on remaining Zero-to-First-Blood features.**
+- ✅ **Phase 4 Feature 2: `quick-recon` command COMPLETE!** Predefined reconnaissance sequence with guided confirmation for zero-to-results workflow.
+- 🟢 **Phase 4 in progress: Working on remaining Zero-to-First-Blood features (exploit suggestion and debrief generator).**
 
 ---
 
@@ -119,8 +120,10 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
     *   ✅ **Dynamic IP handling** - correctly handles CTF platforms where IPs are assigned after box start.
     *   ✅ **Rich console output** with VPN setup guidance, expected services display, and mission status.
     *   ✅ **Comprehensive error handling** and user-friendly messaging for invalid box identifiers.
-*   [ ] **`quick-recon` macro/command:**
-    *   [ ] A wrapper command that helps users quickly run a sequence of recon tools with opinionated default settings, but always with user confirmation and control.
+*   ✅ **`quick-recon` macro/command (COMPLETED January 2025):**
+    *   ✅ A wrapper command that helps users quickly run a sequence of recon tools with opinionated default settings, but always with user confirmation and control.
+    *   ✅ Implements `a37 quick-recon --target <target_ip>` with predefined sequence: initial SYN scan, service detection on discovered ports, and web enumeration/vulnerability scanning on HTTP/HTTPS services.
+    *   ✅ Maintains educational value through existing `_confirm_tool_proposal` flow with parameter explanations.
 *   [ ] **Exploit Suggestion (formerly Auto-Exploit Stub):**
     *   [ ] Based on service versions identified (Nmap, Nikto) and potential vulnerabilities (Nikto):
         *   Integrate `searchsploit` or a similar local exploit database lookup.
@@ -139,7 +142,7 @@ Okay, this is a smart move. Focusing on a strong, achievable core and then itera
     *   [ ] Implement a simple command like `a37 flag <flag_string>` or allow the user to tell the AI "I found the flag! It's XYZ".
     *   [ ] Display a fun ASCII art confirmation / "dopamine hit" message.
 
-**Status: Phase 4 - IN PROGRESS (Feature 1/4 Complete)** 🚀
+**Status: Phase 4 - IN PROGRESS (Feature 2/4 Complete)** 🚀
 
 ---
 

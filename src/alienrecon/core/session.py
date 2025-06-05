@@ -111,16 +111,21 @@ class SessionController:
             findings = tool_result.get("findings", {})
 
             # Update open ports from Nmap results
-            if function_name == "nmap_scan" and "open_ports" in findings:
+            if function_name == "nmap_scan" and "hosts" in findings:
                 discovered_ports = []
-                for port_info in findings["open_ports"]:
-                    port_data = {
-                        "port": port_info.get("port"),
-                        "service": port_info.get("service", "unknown"),
-                        "version": port_info.get("version", ""),
-                        "state": port_info.get("state", "open"),
-                    }
-                    discovered_ports.append(port_data)
+                
+                # Extract open ports from all hosts in the scan results
+                for host in findings.get("hosts", []):
+                    if host.get("status") == "up" and "open_ports" in host:
+                        for port_info in host["open_ports"]:
+                            port_data = {
+                                "port": port_info.get("port"),
+                                "service": port_info.get("service", "unknown"),
+                                "version": port_info.get("version", ""),
+                                "state": "open",  # These are already filtered to be open ports
+                                "protocol": port_info.get("protocol", "tcp"),
+                            }
+                            discovered_ports.append(port_data)
 
                 # Merge with existing ports, avoiding duplicates
                 existing_ports = {p["port"] for p in self.state["open_ports"]}
@@ -128,9 +133,12 @@ class SessionController:
                     if new_port["port"] not in existing_ports:
                         self.state["open_ports"].append(new_port)
 
-                logger.info(
-                    f"Updated session state with {len(discovered_ports)} discovered ports"
-                )
+                if discovered_ports:
+                    logger.info(
+                        f"Updated session state with {len(discovered_ports)} discovered ports: {[f'{p['port']}/{p['service']}' for p in discovered_ports]}"
+                    )
+                else:
+                    logger.info("No open ports found in nmap scan results")
 
             # Update discovered subdomains/vhosts from FFUF vhost enumeration
             elif function_name == "ffuf_vhost_enum" and isinstance(findings, list):
@@ -351,16 +359,21 @@ class SessionController:
             return self.execute_next_plan_step()  # Try next step
 
         # Create a mock tool call for this step
-        from openai.types.chat.chat_completion_message_tool_call import (
-            ChatCompletionMessageToolCall,
-        )
-        from openai.types.chat.chat_completion_message_tool_call_function import (
-            ChatCompletionMessageToolCallFunction,
-        )
+        # Use simple namespace objects to avoid import issues
+        class SimpleFunction:
+            def __init__(self, name, arguments):
+                self.name = name
+                self.arguments = arguments
+        
+        class SimpleToolCall:
+            def __init__(self, id, function, type="function"):
+                self.id = id
+                self.function = function
+                self.type = type
 
-        mock_tool_call = ChatCompletionMessageToolCall(
+        mock_tool_call = SimpleToolCall(
             id=f"call_{datetime.now().strftime('%H%M%S')}",
-            function=ChatCompletionMessageToolCallFunction(
+            function=SimpleFunction(
                 name=step["function_name"], arguments=json.dumps(step["arguments"])
             ),
             type="function",
@@ -1501,6 +1514,39 @@ class SessionController:
                     border_style="green",
                 )
             )
+            
+            # If there are also detailed findings, display them separately
+            if "findings" in display_dict and display_dict["findings"]:
+                findings = display_dict["findings"]
+                
+                # Special formatting for nikto vulnerability findings
+                if function_name == "nikto_scan" and isinstance(findings, list) and findings:
+                    self.console.print("\n[bold yellow]🔍 Vulnerability Details:[/bold yellow]")
+                    for i, vuln in enumerate(findings, 1):
+                        vuln_text = f"**{i}.** {vuln.get('description', 'No description')}"
+                        if vuln.get('uri'):
+                            vuln_text += f"\n   • URI: `{vuln['uri']}`"
+                        if vuln.get('method'):
+                            vuln_text += f"\n   • Method: {vuln['method']}"
+                        if vuln.get('id'):
+                            vuln_text += f"\n   • ID: {vuln['id']}"
+                        
+                        self.console.print(Panel(
+                            Markdown(vuln_text),
+                            border_style="yellow",
+                            padding=(0, 1)
+                        ))
+                        
+                # For other tools with findings, show them in a more generic format
+                elif findings:
+                    self.console.print("\n[bold cyan]📋 Detailed Findings:[/bold cyan]")
+                    if isinstance(findings, list):
+                        from pprint import pformat
+                        self.console.print(pformat(findings))
+                    elif isinstance(findings, dict):
+                        self.console.print(json.dumps(findings, indent=2))
+                    else:
+                        self.console.print(str(findings))
         elif "findings" in display_dict:  # Generic display for other tools
             self.console.print(
                 Panel(
@@ -1627,6 +1673,175 @@ class SessionController:
         except Exception as e:
             self.console.print(f"[bold red]Error in assistant: {e}[/bold red]")
             logger.error(f"Error in assistant conversational logic: {e}", exc_info=True)
+
+    def execute_quick_recon_sequence(self):
+        """
+        Execute a predefined quick reconnaissance sequence with user confirmation at each step.
+        
+        This method implements the quick-recon command functionality by orchestrating
+        a standardized reconnaissance workflow using existing LLM functions.
+        """
+        if not self.current_target:
+            self.console.print("[red]Error: No target set. Please set a target first.[/red]")
+            return
+            
+        self.console.print(f"[bold green]Starting Quick Reconnaissance on {self.current_target}[/bold green]")
+        
+        # Define the quick recon sequence steps
+        sequence_steps = [
+            {
+                "name": "Initial Port Scan",
+                "description": "Perform initial SYN scan to discover open ports",
+                "function": "nmap_scan",
+                "args": {
+                    "ip": self.current_target,
+                    "scan_type": "SYN",
+                    "top_ports": 1000,
+                    "custom_arguments": "-Pn"
+                }
+            },
+            {
+                "name": "Service Detection",
+                "description": "Detect services and versions on discovered open ports",
+                "function": "nmap_scan",
+                "args": None,  # Will be set dynamically based on first scan results
+                "depends_on": "Initial Port Scan"
+            }
+        ]
+        
+        # Execute Step 1: Initial port scan
+        self._execute_quick_recon_step(sequence_steps[0])
+        
+        # Get open ports from the first scan to determine next steps
+        open_ports = self.state.get("open_ports", [])
+        if not open_ports:
+            self.console.print("[yellow]No open ports discovered. Quick reconnaissance complete.[/yellow]")
+            return
+            
+        # Build port list for service detection
+        port_list = ",".join([str(port["port"]) for port in open_ports])
+        
+        # Execute Step 2: Service detection on discovered ports
+        service_scan_step = {
+            "name": "Service Detection",
+            "description": f"Detect services and versions on discovered ports: {port_list}",
+            "function": "nmap_scan",
+            "args": {
+                "ip": self.current_target,
+                "ports": port_list,
+                "service_detection": True
+            }
+        }
+        self._execute_quick_recon_step(service_scan_step)
+        
+        # Check for web services and run web-specific scans
+        web_ports = [port for port in open_ports if port["port"] in [80, 443, 8080, 8443, 8000, 8888]]
+        
+        if web_ports:
+            self.console.print(f"[cyan]Discovered {len(web_ports)} web service(s). Running web-specific reconnaissance...[/cyan]")
+            
+            for port_info in web_ports:
+                port = port_info["port"]
+                scheme = "https" if port in [443, 8443] else "http"
+                base_url = f"{scheme}://{self.current_target}:{port}"
+                
+                # Directory enumeration step
+                dir_enum_step = {
+                    "name": f"Directory Enumeration ({scheme.upper()}:{port})",
+                    "description": f"Enumerate directories and files on {base_url}",
+                    "function": "ffuf_dir_enum",
+                    "args": {
+                        "url": base_url
+                    }
+                }
+                self._execute_quick_recon_step(dir_enum_step)
+                
+                # Nikto vulnerability scan step
+                nikto_step = {
+                    "name": f"Nikto Vulnerability Scan ({scheme.upper()}:{port})",
+                    "description": f"Scan {base_url} for common vulnerabilities",
+                    "function": "nikto_scan",
+                    "args": {
+                        "ip_or_url": base_url
+                    }
+                }
+                self._execute_quick_recon_step(nikto_step)
+        
+        self.console.print(
+            Panel.fit(
+                "[bold green]✅ Quick Reconnaissance Complete![/bold green]\n\n"
+                "[dim]Summary of actions performed:[/dim]\n"
+                "• Initial port scan (SYN scan, top 1000 ports)\n"
+                "• Service detection on discovered ports\n"
+                + (f"• Directory enumeration on {len(web_ports)} web service(s)\n" if web_ports else "")
+                + (f"• Vulnerability scanning on {len(web_ports)} web service(s)\n" if web_ports else "")
+                + "\n[dim]Check the results above for discovered services and potential entry points.[/dim]",
+                border_style="green",
+                title="🎯 Quick Recon Summary",
+            )
+        )
+        
+        # Save session with discovered information
+        self.save_session()
+
+    def _execute_quick_recon_step(self, step: dict):
+        """
+        Execute a single step in the quick reconnaissance sequence.
+        
+        This creates a tool call, presents it to the user for confirmation,
+        and executes it following the existing confirmation workflow.
+        """
+        function_name = step["function"]
+        step_name = step["name"]
+        description = step["description"]
+        args = step["args"]
+        
+        if not args:
+            self.console.print(f"[yellow]Skipping {step_name}: No arguments provided[/yellow]")
+            return
+            
+        self.console.print(f"\n[bold cyan]Step: {step_name}[/bold cyan]")
+        self.console.print(f"[dim]{description}[/dim]")
+        
+        # Create a mock tool call similar to what the LLM would generate
+        # Use a simple namespace approach to avoid problematic imports
+        import json
+        
+        # Create simple namespace objects that mimic the expected structure
+        class SimpleFunction:
+            def __init__(self, name, arguments):
+                self.name = name
+                self.arguments = arguments
+        
+        class SimpleToolCall:
+            def __init__(self, id, function, type="function"):
+                self.id = id
+                self.function = function
+                self.type = type
+        
+        # Create the tool call structure using compatible objects
+        mock_tool_call = SimpleToolCall(
+            id=f"call_{step_name.replace(' ', '_').lower()}",
+            function=SimpleFunction(
+                name=function_name,
+                arguments=json.dumps(args)
+            ),
+            type="function"
+        )
+        
+        # Set as pending tool call
+        self.pending_tool_call = mock_tool_call
+        
+        # Use existing confirmation and execution flow
+        if self._confirm_tool_proposal():
+            success = self._execute_single_tool_call_and_update_history()
+            if success:
+                self.console.print(f"[green]✅ {step_name} completed successfully[/green]")
+            else:
+                self.console.print(f"[red]❌ {step_name} failed[/red]")
+        else:
+            self.console.print(f"[yellow]⏭️  {step_name} skipped by user[/yellow]")
+            self.pending_tool_call = None
 
     def _resolve_and_validate_ip(
         self, proposed_ip_str: Optional[str], param_name: str, function_name: str

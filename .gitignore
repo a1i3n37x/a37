@@ -12,3 +12,7 @@ build/
 *.sqlite3
 *.log
 .env
+
+# Alien Recon runtime files
+.alienrecon/
+.alienrecon_session.json

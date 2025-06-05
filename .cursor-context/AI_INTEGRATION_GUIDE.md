@@ -37,6 +37,12 @@ The core behavior of the Alien Recon AI is guided by `AGENT_SYSTEM_PROMPT`. Key 
 -   This history includes messages from the `user`, `assistant`, and `tool` roles.
 -   The session (including `chat_history`, `current_target`, and `is_novice_mode`) is saved to `.alienrecon_session.json` after significant events (e.g., adding a message, changing target) and can be loaded when `a37` starts.
 
+## Quick-Recon Sequence (Zero-to-First-Blood)
+-   The `execute_quick_recon_sequence()` method in `SessionController` implements a predefined reconnaissance workflow designed for beginners.
+-   This sequence bypasses the conversational AI flow and instead executes a structured sequence of tool calls with user confirmation.
+-   The sequence includes: initial port scanning, service detection on discovered ports, and web enumeration/vulnerability scanning on HTTP/HTTPS services.
+-   Each step uses the same `_confirm_tool_proposal()` and `_execute_single_tool_call_and_update_history()` mechanisms as the interactive assistant mode, ensuring consistency and educational value.
+
 ## Smart Defaults and Parameter Handling
 -   Many LLM tool functions in `llm_functions.py` incorporate intelligent defaults:
     -   **Wordlists**: DNS-related functions (e.g., `ffuf_vhost_enum`) attempt to use smaller, DNS-optimized wordlists first (like `dns-fast-clean.txt`). Directory enumeration functions use `DEFAULT_WORDLIST` from `config.py`.
