@@ -12,11 +12,14 @@ import logging
 from typing import Optional, Union
 
 from ..core.cache import cache_result
-from ..core.config import DEFAULT_WORDLIST, find_wordlist
+from ..core.config import DEFAULT_WORDLIST, DEFAULT_PASSWORD_LIST, find_wordlist
 from .ffuf import FFUFTool
+from .http_fetcher import HttpPageFetcherTool
 from .http_ssl_probe import HTTPSSLProbeTool
+from .hydra import HydraTool
 from .nikto import NiktoTool
 from .nmap import NmapTool
+from .smb import SmbTool
 from .ssl_inspector import SSLInspectorTool
 
 logger = logging.getLogger(__name__)
@@ -887,6 +890,214 @@ def probe_ssl_errors(
 
 
 # =============================================================================
+# SMB ENUMERATION FUNCTIONS
+# =============================================================================
+
+@cache_result(ttl=3600)  # 1 hour cache for SMB enumeration
+def smb_enumerate(
+    ip: str,
+    enum_arguments: str = "-A",
+) -> dict:
+    """
+    Perform SMB enumeration (shares, users, policies, etc.) using enum4linux-ng.
+
+    This function provides comprehensive SMB enumeration capabilities commonly needed
+    in CTF and penetration testing scenarios. It can discover SMB shares, user accounts,
+    domain information, and security policies.
+
+    Args:
+        ip: Target IP address or hostname
+        enum_arguments: Arguments for enum4linux-ng (default: "-A" for all checks)
+
+    Returns:
+        Dict with structured SMB enumeration results
+    """
+    try:
+        smb_tool = SmbTool()
+        if not smb_tool.executable_path:
+            return _create_enhanced_error_response(
+                "smb_enum",
+                "enumeration",
+                "enum4linux-ng executable not found",
+                [
+                    "Install enum4linux-ng: apt install enum4linux-ng",
+                    "Verify enum4linux-ng is in your PATH",
+                    "Consider using alternative SMB enumeration tools if enum4linux-ng is unavailable",
+                ]
+            )
+
+        # Execute SMB enumeration
+        result = smb_tool.execute(target=ip, enum_arguments=enum_arguments)
+
+        # Structure the response for CTF scenarios
+        findings = result.get("findings", {})
+        
+        return {
+            "tool": "smb_enum", 
+            "mode": "enumeration",
+            "status": result.get("status", "unknown"),
+            "findings": findings,
+            "scan_summary": result.get("scan_summary", ""),
+            "raw_stdout": result.get("raw_stdout", "")[:1000] if result.get("raw_stdout") else None,  # Limit output size
+            "error": result.get("error"),
+        }
+
+    except Exception as e:
+        logger.error(f"Error in smb_enumerate: {e}")
+        return _create_enhanced_error_response(
+            "smb_enum", "enumeration", str(e)
+        )
+
+
+# =============================================================================
+# HYDRA BRUTE-FORCE FUNCTIONS  
+# =============================================================================
+
+@cache_result(ttl=1800)  # 30 minute cache for brute-force attacks
+def hydra_bruteforce(
+    target: str,
+    port: int,
+    service_protocol: str,
+    username: str,
+    password_list: Optional[str] = None,
+    path: Optional[str] = None,
+    threads: int = 4,
+    hydra_options: Optional[str] = None,
+) -> dict:
+    """
+    Perform brute-force password attacks on login services using Hydra.
+
+    This function enables automated password attacks against various services
+    like SSH, FTP, HTTP forms, and more. Commonly used in CTF scenarios
+    to discover weak or default credentials.
+
+    Args:
+        target: Target IP address or hostname
+        port: Target port number
+        service_protocol: Hydra service module (e.g., 'ssh', 'ftp', 'http-post-form')
+        username: Username to target for brute-force attack
+        password_list: Path to password list (uses system default if not specified)
+        path: Optional path for HTTP services (e.g., "/login.php")
+        threads: Number of parallel threads (default: 4, conservative for stability)
+        hydra_options: Additional Hydra command-line options
+
+    Returns:
+        Dict with brute-force attack results including any discovered credentials
+    """
+    try:
+        hydra_tool = HydraTool()
+        if not hydra_tool.executable_path:
+            return _create_enhanced_error_response(
+                "hydra",
+                "brute_force",
+                "hydra executable not found",
+                [
+                    "Install Hydra: apt install hydra",
+                    "Verify Hydra is in your PATH",
+                    "Consider manual credential testing if Hydra is unavailable",
+                ]
+            )
+
+        # Use default password list if none specified
+        effective_password_list = password_list or DEFAULT_PASSWORD_LIST
+        if not effective_password_list:
+            return _create_enhanced_error_response(
+                "hydra",
+                "brute_force", 
+                "No password list specified and no default password list found",
+                [
+                    "Specify a password list using the password_list parameter",
+                    "Install SecLists for common password lists: apt install seclists",
+                    "Common paths: /usr/share/seclists/Passwords/ or /usr/share/wordlists/",
+                ]
+            )
+
+        # Execute brute-force attack
+        result = hydra_tool.execute(
+            target=target,
+            port=port,
+            service_protocol=service_protocol,
+            username=username,
+            password_list=effective_password_list,
+            path=path,
+            threads=threads,
+            hydra_options=hydra_options,
+        )
+
+        # Structure response for security analysis
+        findings = result.get("findings", {})
+        
+        return {
+            "tool": "hydra",
+            "mode": "brute_force", 
+            "status": result.get("status", "unknown"),
+            "findings": findings,
+            "scan_summary": result.get("scan_summary", ""),
+            "raw_stdout": result.get("raw_stdout", "")[:1000] if result.get("raw_stdout") else None,
+            "error": result.get("error"),
+        }
+
+    except Exception as e:
+        logger.error(f"Error in hydra_bruteforce: {e}")
+        return _create_enhanced_error_response(
+            "hydra", "brute_force", str(e)
+        )
+
+
+# =============================================================================
+# HTTP PAGE CONTENT FETCHER FUNCTIONS
+# =============================================================================
+
+@cache_result(ttl=1800)  # 30 minute cache for web page content
+def fetch_web_page_content(
+    url_to_fetch: str,
+    timeout: int = 15,
+) -> dict:
+    """
+    Fetch the full HTML or text content of a given web page for detailed analysis.
+
+    This function retrieves complete page content, which is useful for analyzing
+    source code for comments, scripts, hidden fields, API endpoints, or specific
+    information after initial discovery scans. Distinct from SSL probing - this
+    focuses on actual page content analysis.
+
+    Args:
+        url_to_fetch: Full URL to fetch (e.g., "http://target.com/index.html")
+        timeout: Request timeout in seconds (default: 15)
+
+    Returns:
+        Dict with fetched page content and metadata for analysis
+    """
+    try:
+        fetcher_tool = HttpPageFetcherTool()
+        
+        # Execute content fetch
+        result = fetcher_tool.execute(
+            url_to_fetch=url_to_fetch,
+            timeout=timeout
+        )
+
+        # Structure response for content analysis
+        findings = result.get("findings", {})
+        
+        return {
+            "tool": "http_page_fetcher",
+            "mode": "content_fetch",
+            "status": result.get("status", "unknown"), 
+            "findings": findings,
+            "scan_summary": result.get("scan_summary", ""),
+            "raw_stdout": result.get("raw_stdout", "")[:2000] if result.get("raw_stdout") else None,  # Larger limit for HTML content
+            "error": result.get("error"),
+        }
+
+    except Exception as e:
+        logger.error(f"Error in fetch_web_page_content: {e}")
+        return _create_enhanced_error_response(
+            "http_page_fetcher", "content_fetch", str(e)
+        )
+
+
+# =============================================================================
 # Function Registry for LLM Integration
 # =============================================================================
 
@@ -1165,6 +1376,84 @@ LLM_TOOL_FUNCTIONS = {
             },
         },
         "required": ["url"],
+    },
+    # SMB Enumeration functions
+    "smb_enumerate": {
+        "function": smb_enumerate,
+        "description": "Perform SMB enumeration (shares, users, policies, etc.) using enum4linux-ng against a target. Useful for discovering SMB shares, user accounts, domain information, and security policies in CTF and penetration testing scenarios.",
+        "parameters": {
+            "ip": {
+                "type": "string",
+                "description": "Target IP address or hostname for SMB enumeration",
+            },
+            "enum_arguments": {
+                "type": "string",
+                "description": "Arguments for enum4linux-ng (default: '-A' for all checks)",
+                "default": "-A",
+            },
+        },
+        "required": ["ip"],
+    },
+    # Hydra Brute-force functions
+    "hydra_bruteforce": {
+        "function": hydra_bruteforce,
+        "description": "Perform brute-force password attacks on login services (SSH, FTP, HTTP forms, etc.) using Hydra. Commonly used in CTF scenarios to discover weak or default credentials.",
+        "parameters": {
+            "target": {
+                "type": "string",
+                "description": "Target IP address or hostname",
+            },
+            "port": {
+                "type": "integer",
+                "description": "Target port number",
+            },
+            "service_protocol": {
+                "type": "string",
+                "description": "Hydra service module (e.g., 'ssh', 'ftp', 'http-post-form', 'http-get')",
+            },
+            "username": {
+                "type": "string",
+                "description": "Username to target for brute-force attack",
+            },
+            "password_list": {
+                "type": "string",
+                "description": "Path to password list (uses system default if not specified)",
+                "optional": True,
+            },
+            "path": {
+                "type": "string",
+                "description": "Optional path for HTTP services (e.g., '/login.php')",
+                "optional": True,
+            },
+            "threads": {
+                "type": "integer",
+                "description": "Number of parallel threads (default: 4, conservative for stability)",
+                "default": 4,
+            },
+            "hydra_options": {
+                "type": "string",
+                "description": "Additional Hydra command-line options (optional)",
+                "optional": True,
+            },
+        },
+        "required": ["target", "port", "service_protocol", "username"],
+    },
+    # HTTP Page Content Fetcher functions
+    "fetch_web_page_content": {
+        "function": fetch_web_page_content,
+        "description": "Fetch the full HTML or text content of a given web page for detailed analysis. Useful for analyzing page source for comments, scripts, hidden fields, API endpoints, or specific information after initial discovery scans.",
+        "parameters": {
+            "url_to_fetch": {
+                "type": "string",
+                "description": "Full URL to fetch (e.g., 'http://target.com/index.html')",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Request timeout in seconds",
+                "default": 15,
+            },
+        },
+        "required": ["url_to_fetch"],
     },
     # Plan Management functions
     "create_recon_plan": {
