@@ -171,6 +171,7 @@ KNOWN_TOOL_FALLBACK_PATHS = {
     "ffuf": "/usr/bin/ffuf",  # Added ffuf
     "openssl": "/usr/bin/openssl",  # Added openssl for SSL certificate inspection
     "curl": "/usr/bin/curl",  # Added curl for HTTP SSL probing
+    "searchsploit": "/usr/bin/searchsploit",  # Added searchsploit for exploit database searches
 }
 
 TOOL_PATHS = {}

@@ -26,6 +26,7 @@ from ..tools.hydra import HydraTool
 from ..tools.llm_functions import LLM_TOOL_FUNCTIONS, _set_session_controller
 from ..tools.nikto import NiktoTool
 from ..tools.nmap import NmapTool
+from ..tools.searchsploit import SearchsploitTool
 from ..tools.smb import SmbTool
 from ..tools.ssl_inspector import SSLInspectorTool
 from .agent import (
@@ -113,7 +114,7 @@ class SessionController:
             # Update open ports from Nmap results
             if function_name == "nmap_scan" and "hosts" in findings:
                 discovered_ports = []
-                
+
                 # Extract open ports from all hosts in the scan results
                 for host in findings.get("hosts", []):
                     if host.get("status") == "up" and "open_ports" in host:
@@ -364,7 +365,7 @@ class SessionController:
             def __init__(self, name, arguments):
                 self.name = name
                 self.arguments = arguments
-        
+
         class SimpleToolCall:
             def __init__(self, id, function, type="function"):
                 self.id = id
@@ -479,6 +480,7 @@ class SessionController:
         command_tool_classes = {
             "nmap_tool": NmapTool,
             "nikto_tool": NiktoTool,
+            "searchsploit_tool": SearchsploitTool,
             "smb_tool": SmbTool,
             "hydra_tool": HydraTool,
             "ssl_inspector_tool": SSLInspectorTool,
@@ -1514,11 +1516,11 @@ class SessionController:
                     border_style="green",
                 )
             )
-            
+
             # If there are also detailed findings, display them separately
             if "findings" in display_dict and display_dict["findings"]:
                 findings = display_dict["findings"]
-                
+
                 # Special formatting for nikto vulnerability findings
                 if function_name == "nikto_scan" and isinstance(findings, list) and findings:
                     self.console.print("\n[bold yellow]🔍 Vulnerability Details:[/bold yellow]")
@@ -1530,13 +1532,13 @@ class SessionController:
                             vuln_text += f"\n   • Method: {vuln['method']}"
                         if vuln.get('id'):
                             vuln_text += f"\n   • ID: {vuln['id']}"
-                        
+
                         self.console.print(Panel(
                             Markdown(vuln_text),
                             border_style="yellow",
                             padding=(0, 1)
                         ))
-                        
+
                 # For other tools with findings, show them in a more generic format
                 elif findings:
                     self.console.print("\n[bold cyan]📋 Detailed Findings:[/bold cyan]")
@@ -1677,16 +1679,16 @@ class SessionController:
     def execute_quick_recon_sequence(self):
         """
         Execute a predefined quick reconnaissance sequence with user confirmation at each step.
-        
+
         This method implements the quick-recon command functionality by orchestrating
         a standardized reconnaissance workflow using existing LLM functions.
         """
         if not self.current_target:
             self.console.print("[red]Error: No target set. Please set a target first.[/red]")
             return
-            
+
         self.console.print(f"[bold green]Starting Quick Reconnaissance on {self.current_target}[/bold green]")
-        
+
         # Define the quick recon sequence steps
         sequence_steps = [
             {
@@ -1708,19 +1710,19 @@ class SessionController:
                 "depends_on": "Initial Port Scan"
             }
         ]
-        
+
         # Execute Step 1: Initial port scan
         self._execute_quick_recon_step(sequence_steps[0])
-        
+
         # Get open ports from the first scan to determine next steps
         open_ports = self.state.get("open_ports", [])
         if not open_ports:
             self.console.print("[yellow]No open ports discovered. Quick reconnaissance complete.[/yellow]")
             return
-            
+
         # Build port list for service detection
         port_list = ",".join([str(port["port"]) for port in open_ports])
-        
+
         # Execute Step 2: Service detection on discovered ports
         service_scan_step = {
             "name": "Service Detection",
@@ -1733,18 +1735,18 @@ class SessionController:
             }
         }
         self._execute_quick_recon_step(service_scan_step)
-        
+
         # Check for web services and run web-specific scans
         web_ports = [port for port in open_ports if port["port"] in [80, 443, 8080, 8443, 8000, 8888]]
-        
+
         if web_ports:
             self.console.print(f"[cyan]Discovered {len(web_ports)} web service(s). Running web-specific reconnaissance...[/cyan]")
-            
+
             for port_info in web_ports:
                 port = port_info["port"]
                 scheme = "https" if port in [443, 8443] else "http"
                 base_url = f"{scheme}://{self.current_target}:{port}"
-                
+
                 # Directory enumeration step
                 dir_enum_step = {
                     "name": f"Directory Enumeration ({scheme.upper()}:{port})",
@@ -1755,7 +1757,7 @@ class SessionController:
                     }
                 }
                 self._execute_quick_recon_step(dir_enum_step)
-                
+
                 # Nikto vulnerability scan step
                 nikto_step = {
                     "name": f"Nikto Vulnerability Scan ({scheme.upper()}:{port})",
@@ -1766,7 +1768,7 @@ class SessionController:
                     }
                 }
                 self._execute_quick_recon_step(nikto_step)
-        
+
         self.console.print(
             Panel.fit(
                 "[bold green]✅ Quick Reconnaissance Complete![/bold green]\n\n"
@@ -1780,14 +1782,14 @@ class SessionController:
                 title="🎯 Quick Recon Summary",
             )
         )
-        
+
         # Save session with discovered information
         self.save_session()
 
     def _execute_quick_recon_step(self, step: dict):
         """
         Execute a single step in the quick reconnaissance sequence.
-        
+
         This creates a tool call, presents it to the user for confirmation,
         and executes it following the existing confirmation workflow.
         """
@@ -1795,30 +1797,30 @@ class SessionController:
         step_name = step["name"]
         description = step["description"]
         args = step["args"]
-        
+
         if not args:
             self.console.print(f"[yellow]Skipping {step_name}: No arguments provided[/yellow]")
             return
-            
+
         self.console.print(f"\n[bold cyan]Step: {step_name}[/bold cyan]")
         self.console.print(f"[dim]{description}[/dim]")
-        
+
         # Create a mock tool call similar to what the LLM would generate
         # Use a simple namespace approach to avoid problematic imports
         import json
-        
+
         # Create simple namespace objects that mimic the expected structure
         class SimpleFunction:
             def __init__(self, name, arguments):
                 self.name = name
                 self.arguments = arguments
-        
+
         class SimpleToolCall:
             def __init__(self, id, function, type="function"):
                 self.id = id
                 self.function = function
                 self.type = type
-        
+
         # Create the tool call structure using compatible objects
         mock_tool_call = SimpleToolCall(
             id=f"call_{step_name.replace(' ', '_').lower()}",
@@ -1828,10 +1830,10 @@ class SessionController:
             ),
             type="function"
         )
-        
+
         # Set as pending tool call
         self.pending_tool_call = mock_tool_call
-        
+
         # Use existing confirmation and execution flow
         if self._confirm_tool_proposal():
             success = self._execute_single_tool_call_and_update_history()

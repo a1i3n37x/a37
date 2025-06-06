@@ -5,10 +5,68 @@ from abc import ABC, abstractmethod
 
 # Correct import from core.config
 from ..core.config import TOOL_PATHS, console
+from ..core.exceptions import SecurityError, ValidationError
+from ..core.input_validator import InputValidator
 from ..core.types import ToolResult
 
 # DEFINE THE MODULE-LEVEL LOGGER
 logger = logging.getLogger(__name__)
+
+
+def _validate_command_security(command_list: list[str]) -> None:
+    """Validate command for security concerns."""
+    if not command_list:
+        raise ValidationError("Empty command list")
+
+    # Check executable
+    executable = command_list[0]
+
+    # Allowed executable names for security tools
+    ALLOWED_EXECUTABLES = {
+        'nmap', 'nikto', 'ffuf', 'hydra', 'enum4linux-ng',
+        'smbclient', 'openssl', 'curl', 'wget', 'searchsploit'
+    }
+
+    executable_name = os.path.basename(executable)
+    if executable_name not in ALLOWED_EXECUTABLES:
+        raise SecurityError(f"Executable '{executable_name}' not in allowed list")
+
+    # Check for dangerous argument patterns
+    full_command = ' '.join(command_list)
+
+    # Dangerous patterns that should never appear
+    DANGEROUS_PATTERNS = [
+        r';\s*rm\s+-rf',
+        r';\s*dd\s+',
+        r'>\s*/dev/',
+        r'`[^`]+`',
+        r'\$\([^)]+\)',
+        r'&&\s*curl.*\|\s*sh',
+        r'&&\s*wget.*\|\s*sh',
+        r'\|\s*sh\s*$',
+        r'\|\s*bash\s*$',
+        r'exec\s*\(',
+    ]
+
+    import re
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, full_command, re.IGNORECASE):
+            raise SecurityError(f"Dangerous command pattern detected: {pattern}")
+
+    # Validate individual arguments
+    for arg in command_list[1:]:
+        if len(arg) > 1000:  # Prevent extremely long arguments
+            raise ValidationError(f"Argument too long: {len(arg)} characters")
+
+        # Check for null bytes
+        if '\x00' in arg:
+            raise SecurityError("Null byte detected in argument")
+
+        # Check for control characters (except common ones)
+        import string
+        allowed_chars = string.printable.replace('\x0b\x0c', '')
+        if not all(c in allowed_chars for c in arg):
+            raise SecurityError("Invalid characters detected in argument")
 
 
 def run_command(
@@ -18,6 +76,13 @@ def run_command(
         # Use the logger we just defined
         logger.error("Empty command list provided to run_command.")
         return None, "Empty command list provided."
+
+    # Validate the command for security
+    try:
+        _validate_command_security(command_list)
+    except (SecurityError, ValidationError) as e:
+        logger.error(f"Command security validation failed: {e}")
+        return None, f"Security validation failed: {e}"
 
     executable_name = os.path.basename(command_list[0])
     # Use the logger
@@ -114,6 +179,36 @@ class CommandTool(ABC):
     def build_command(self, **kwargs) -> list[str]:
         pass
 
+    def validate_input(self, **kwargs) -> dict:
+        """Validate and sanitize input parameters. Override in subclasses for specific validation."""
+        validated = {}
+
+        # Common validations
+        if 'target' in kwargs:
+            validated['target'] = InputValidator.validate_target(kwargs['target'])
+
+        if 'port' in kwargs:
+            validated['port'] = InputValidator.validate_port(kwargs['port'])
+
+        if 'ports' in kwargs:
+            validated['ports'] = InputValidator.validate_port_list(kwargs['ports'])
+
+        if 'url' in kwargs:
+            validated['url'] = InputValidator.validate_url(kwargs['url'])
+
+        if 'username' in kwargs:
+            validated['username'] = InputValidator.validate_username(kwargs['username'])
+
+        if 'wordlist' in kwargs:
+            validated['wordlist'] = str(InputValidator.validate_wordlist_path(kwargs['wordlist']))
+
+        # Copy other arguments that don't need validation
+        for key, value in kwargs.items():
+            if key not in validated:
+                validated[key] = value
+
+        return validated
+
     @abstractmethod
     def parse_output(
         self, stdout: str | None, stderr: str | None, **kwargs
@@ -137,7 +232,9 @@ class CommandTool(ABC):
             }
 
         try:
-            command_args = self.build_command(**kwargs)
+            # Validate input parameters first
+            validated_kwargs = self.validate_input(**kwargs)
+            command_args = self.build_command(**validated_kwargs)
             if not isinstance(self.executable_path, str):
                 err_msg = f"Tool '{self.name}' has an invalid executable_path type: {type(self.executable_path)}. Expected string."
                 logger.error(err_msg)

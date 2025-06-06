@@ -12,13 +12,15 @@ import logging
 from typing import Optional, Union
 
 from ..core.cache import cache_result
-from ..core.config import DEFAULT_WORDLIST, DEFAULT_PASSWORD_LIST, find_wordlist
+from ..core.config import DEFAULT_PASSWORD_LIST, DEFAULT_WORDLIST, find_wordlist
+from ..core.exploit_analyzer import ExploitAnalyzer
 from .ffuf import FFUFTool
 from .http_fetcher import HttpPageFetcherTool
 from .http_ssl_probe import HTTPSSLProbeTool
 from .hydra import HydraTool
 from .nikto import NiktoTool
 from .nmap import NmapTool
+from .searchsploit import SearchsploitTool
 from .smb import SmbTool
 from .ssl_inspector import SSLInspectorTool
 
@@ -931,9 +933,9 @@ def smb_enumerate(
 
         # Structure the response for CTF scenarios
         findings = result.get("findings", {})
-        
+
         return {
-            "tool": "smb_enum", 
+            "tool": "smb_enum",
             "mode": "enumeration",
             "status": result.get("status", "unknown"),
             "findings": findings,
@@ -950,7 +952,7 @@ def smb_enumerate(
 
 
 # =============================================================================
-# HYDRA BRUTE-FORCE FUNCTIONS  
+# HYDRA BRUTE-FORCE FUNCTIONS
 # =============================================================================
 
 @cache_result(ttl=1800)  # 30 minute cache for brute-force attacks
@@ -1003,7 +1005,7 @@ def hydra_bruteforce(
         if not effective_password_list:
             return _create_enhanced_error_response(
                 "hydra",
-                "brute_force", 
+                "brute_force",
                 "No password list specified and no default password list found",
                 [
                     "Specify a password list using the password_list parameter",
@@ -1026,10 +1028,10 @@ def hydra_bruteforce(
 
         # Structure response for security analysis
         findings = result.get("findings", {})
-        
+
         return {
             "tool": "hydra",
-            "mode": "brute_force", 
+            "mode": "brute_force",
             "status": result.get("status", "unknown"),
             "findings": findings,
             "scan_summary": result.get("scan_summary", ""),
@@ -1070,7 +1072,7 @@ def fetch_web_page_content(
     """
     try:
         fetcher_tool = HttpPageFetcherTool()
-        
+
         # Execute content fetch
         result = fetcher_tool.execute(
             url_to_fetch=url_to_fetch,
@@ -1079,11 +1081,11 @@ def fetch_web_page_content(
 
         # Structure response for content analysis
         findings = result.get("findings", {})
-        
+
         return {
             "tool": "http_page_fetcher",
             "mode": "content_fetch",
-            "status": result.get("status", "unknown"), 
+            "status": result.get("status", "unknown"),
             "findings": findings,
             "scan_summary": result.get("scan_summary", ""),
             "raw_stdout": result.get("raw_stdout", "")[:2000] if result.get("raw_stdout") else None,  # Larger limit for HTML content
@@ -1094,6 +1096,266 @@ def fetch_web_page_content(
         logger.error(f"Error in fetch_web_page_content: {e}")
         return _create_enhanced_error_response(
             "http_page_fetcher", "content_fetch", str(e)
+        )
+
+
+# =============================================================================
+# EXPLOIT SEARCH AND ANALYSIS FUNCTIONS
+# =============================================================================
+
+@cache_result(ttl=3600)  # 1 hour cache for exploit searches
+def search_exploits(
+    query: str,
+    exact: bool = False,
+    cve: Optional[str] = None,
+    edb_id: Optional[int] = None,
+    max_results: int = 20,
+) -> dict:
+    """
+    Search the Exploit Database for exploits related to specific services, versions, or CVEs.
+
+    This function searches the local searchsploit database for potential exploits
+    that could be relevant to services discovered during reconnaissance. Essential
+    for identifying attack vectors and vulnerability research in CTF scenarios.
+
+    Args:
+        query: Search query (e.g., 'vsftpd 2.3.4', 'apache 2.2', 'samba 3.0')
+        exact: Perform exact match search (default: False for broader results)
+        cve: Search for specific CVE (e.g., 'CVE-2011-2523')
+        edb_id: Search for specific Exploit-DB ID number
+        max_results: Maximum number of results to return (default: 20)
+
+    Returns:
+        Dict with exploit search results including titles, platforms, CVEs, and paths
+    """
+    try:
+        searchsploit_tool = SearchsploitTool()
+        if not searchsploit_tool.executable_path:
+            return _create_enhanced_error_response(
+                "searchsploit",
+                "exploit_search",
+                "searchsploit executable not found",
+                [
+                    "Install exploitdb package: apt install exploitdb",
+                    "Verify searchsploit is in your PATH",
+                    "Consider manual exploit research if searchsploit is unavailable",
+                ]
+            )
+
+        # Smart query optimization based on the service type
+        cleaned_query = query
+        
+        # For Apache httpd, search for "httpd" specifically
+        if 'Apache' in query and 'httpd' in query:
+            # Extract version if present
+            import re
+            version_match = re.search(r'\d+\.\d+(?:\.\d+)?', query)
+            if version_match:
+                cleaned_query = f"httpd {version_match.group(0)}"
+            else:
+                cleaned_query = "httpd"
+        # For OpenSSH, keep the version but remove OS details
+        elif 'OpenSSH' in query:
+            # Remove Ubuntu/Debian/etc and specific patch versions
+            cleaned_query = re.sub(r'(Ubuntu|Debian|CentOS|RedHat|Linux).*$', '', query).strip()
+            cleaned_query = re.sub(r'p\d+.*$', '', cleaned_query).strip()
+        # For other services, remove OS-specific suffixes
+        else:
+            for word in ['Ubuntu', 'Debian', 'Linux', 'Windows', 'Server']:
+                if word in cleaned_query and len(cleaned_query.split()) > 2:
+                    cleaned_query = cleaned_query.replace(word, '').strip()
+        
+        logger.debug(f"Searchsploit query optimized from '{query}' to '{cleaned_query}'")
+        
+        # Execute the search
+        result = searchsploit_tool.execute(
+            query=cleaned_query,
+            exact=exact,
+            cve=cve,
+            edb_id=edb_id,
+            max_results=max_results,
+        )
+
+        # Structure response for exploit analysis
+        findings = result.get("findings", [])
+
+        # Categorize exploits by risk level and platform
+        exploit_summary = {
+            "total_exploits": len(findings),
+            "platforms": {},
+            "cves_found": [],
+            "high_risk_exploits": []
+        }
+
+        for exploit in findings:
+            # Count by platform
+            platform = exploit.get("platform", "Unknown")
+            exploit_summary["platforms"][platform] = exploit_summary["platforms"].get(platform, 0) + 1
+
+            # Collect CVEs
+            if exploit.get("cve"):
+                exploit_summary["cves_found"].append(exploit["cve"])
+
+            # Identify high-risk exploits (remote code execution, etc.)
+            title = exploit.get("title", "").lower()
+            if any(keyword in title for keyword in ["remote", "rce", "backdoor", "command execution"]):
+                exploit_summary["high_risk_exploits"].append(exploit)
+
+        return {
+            "tool": "searchsploit",
+            "mode": "exploit_search",
+            "status": result.get("status", "unknown"),
+            "findings": findings,
+            "exploit_summary": exploit_summary,
+            "scan_summary": result.get("scan_summary", ""),
+            "query": query,
+            "error": result.get("error"),
+        }
+
+    except Exception as e:
+        logger.error(f"Error in search_exploits: {e}")
+        return _create_enhanced_error_response("searchsploit", "exploit_search", str(e))
+
+
+def analyze_exploits() -> dict:
+    """
+    Analyze current session reconnaissance results to suggest potential exploits.
+
+    This function examines the current session state to identify discovered services,
+    versions, and vulnerabilities, then provides prioritized exploit suggestions
+    and research directions. Uses the ExploitAnalyzer to match findings against
+    known vulnerability patterns.
+
+    Returns:
+        Dict with prioritized exploit suggestions, search terms, and next steps
+    """
+    try:
+        if not _session_controller:
+            return {
+                "status": "failure",
+                "error": "Session controller not available for exploit analysis",
+            }
+
+        # Get current session state
+        session_state = _session_controller.session_manager.get_state()
+
+        # Initialize exploit analyzer
+        analyzer = ExploitAnalyzer(_session_controller.tool_orchestrator)
+
+        # Analyze session results
+        suggestions = analyzer.analyze_session_results(session_state)
+
+        # Count and categorize suggestions
+        analysis_summary = {
+            "vulnerable_services_count": len(suggestions.get("vulnerable_services", [])),
+            "exploit_searches_count": len(suggestions.get("exploit_searches", [])),
+            "manual_research_count": len(suggestions.get("manual_research", [])),
+            "next_steps_count": len(suggestions.get("next_steps", [])),
+        }
+
+        # Identify critical vulnerabilities
+        critical_vulns = [
+            v for v in suggestions.get("vulnerable_services", [])
+            if v.get("risk_level") == "critical"
+        ]
+
+        if critical_vulns:
+            analysis_summary["critical_vulnerabilities"] = len(critical_vulns)
+            analysis_summary["immediate_action_required"] = True
+
+        return {
+            "tool": "exploit_analyzer",
+            "mode": "session_analysis",
+            "status": "success",
+            "findings": suggestions,
+            "analysis_summary": analysis_summary,
+            "scan_summary": f"Analyzed session with {len(session_state.get('open_ports', []))} discovered services",
+        }
+
+    except Exception as e:
+        logger.error(f"Error in analyze_exploits: {e}")
+        return {
+            "status": "failure",
+            "error": f"Failed to analyze exploits: {str(e)}",
+            "findings": {
+                "vulnerable_services": [],
+                "exploit_searches": [],
+                "manual_research": [],
+                "next_steps": []
+            }
+        }
+
+
+# =============================================================================
+# Searchsploit Functions
+# =============================================================================
+
+
+@cache_result(ttl=3600)  # 1 hour cache for exploit searches
+def searchsploit_search(
+    query: str, exact: bool = False, max_results: int = 20
+) -> dict:
+    """
+    Search for exploits in the Exploit Database using searchsploit.
+
+    Args:
+        query: Search query for exploits (e.g., 'httpd 2.4.41', 'vsftpd 2.3.4')
+        exact: Use exact matching for search terms
+        max_results: Maximum number of results to return
+
+    Returns:
+        Dict with exploit search results
+    """
+    try:
+        searchsploit_tool = SearchsploitTool()
+        if not searchsploit_tool.executable_path:
+            return _create_enhanced_error_response(
+                "searchsploit", "exploit_search", 
+                "Searchsploit executable not found. Please install exploitdb package.",
+                suggestions=[
+                    "Install exploitdb: sudo apt install exploitdb",
+                    "Update exploit database: sudo searchsploit -u",
+                    "Verify installation: which searchsploit"
+                ]
+            )
+
+        # Execute searchsploit search
+        result = searchsploit_tool.execute(
+            query=query,
+            exact=exact,
+            max_results=max_results,
+            json=True
+        )
+
+        # Structure the response for LLM consumption
+        findings = result.get("findings", [])
+        if findings:
+            # Sort by relevance (newer exploits first)
+            findings = sorted(
+                findings, 
+                key=lambda x: x.get("date", "1900-01-01"), 
+                reverse=True
+            )
+
+        return {
+            "tool": "searchsploit",
+            "status": result.get("status", "unknown"),
+            "findings": findings,
+            "scan_summary": result.get("scan_summary", f"Searched for exploits matching '{query}'"),
+            "query_used": query,
+            "total_results": len(findings),
+            "error": result.get("error")
+        }
+
+    except Exception as e:
+        logger.error(f"Error in searchsploit_search function: {e}", exc_info=True)
+        return _create_enhanced_error_response(
+            "searchsploit", "exploit_search", str(e),
+            suggestions=[
+                "Check if searchsploit is installed and in PATH",
+                "Try a simpler search query",
+                "Verify the exploit database is up to date"
+            ]
         )
 
 
@@ -1455,6 +1717,42 @@ LLM_TOOL_FUNCTIONS = {
         },
         "required": ["url_to_fetch"],
     },
+    # Exploit Search and Analysis functions
+    "search_exploits": {
+        "function": search_exploits,
+        "description": "Search the Exploit Database for exploits related to specific services, versions, or CVEs using searchsploit. Essential for identifying potential attack vectors based on reconnaissance findings.",
+        "parameters": {
+            "query": {
+                "type": "string",
+                "description": "Search query (e.g., 'vsftpd 2.3.4', 'apache 2.2', 'CVE-2011-2523')",
+            },
+            "exact": {
+                "type": "boolean",
+                "description": "Perform exact match search",
+                "default": False,
+            },
+            "cve": {
+                "type": "string",
+                "description": "Search for specific CVE (optional)",
+            },
+            "edb_id": {
+                "type": "integer",
+                "description": "Search for specific Exploit-DB ID (optional)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return",
+                "default": 20,
+            },
+        },
+        "required": ["query"],
+    },
+    "analyze_exploits": {
+        "function": analyze_exploits,
+        "description": "Analyze current session reconnaissance results to suggest potential exploits and attack vectors. Reviews discovered services, versions, and vulnerabilities to provide prioritized exploit suggestions and research directions.",
+        "parameters": {},
+        "required": [],
+    },
     # Plan Management functions
     "create_recon_plan": {
         "function": lambda plan_name, steps, description="": _create_plan_with_session(
@@ -1528,5 +1826,24 @@ LLM_TOOL_FUNCTIONS = {
         "description": "Cancel the current reconnaissance plan. Use this if the user wants to stop the planned sequence.",
         "parameters": {},
         "required": [],
+    },
+    "searchsploit_search": {
+        "function": searchsploit_search,
+        "description": "Search for exploits in the Exploit Database using searchsploit. Use this after discovering service versions from Nmap scans. CRITICAL: Use searchsploit-specific service names: Apache→'httpd', OpenSSH→'ssh', etc.",
+        "parameters": {
+            "query": {
+                "type": "string", 
+                "description": "Searchsploit query using EXACT format: 'httpd 2.4.41' (NOT 'Apache 2.4.41'), 'ssh 8.2p1' (NOT 'OpenSSH 8.2p1'), 'vsftpd 3.0.3', 'nginx 1.18.0', etc. Only service name + version number.",
+            },
+            "exact": {
+                "type": "boolean",
+                "description": "Use exact matching for the search terms. Default is False for broader results.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return. Default is 20.",
+            },
+        },
+        "required": ["query"],
     },
 }
