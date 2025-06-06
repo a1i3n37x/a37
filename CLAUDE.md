@@ -1,5 +1,5 @@
 # CLAUDE.md
-
+#
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
@@ -78,7 +78,7 @@ poetry run pre-commit run --all-files # Run all checks manually
 - Functions include educational parameter descriptions
 - Error messages provide troubleshooting guidance
 
-**Security First**: 
+**Security First**:
 - All user inputs are validated before tool execution
 - Command construction uses secure patterns (no shell=True)
 - IP addresses, ports, and URLs are strictly validated
