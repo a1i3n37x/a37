@@ -1,5 +1,5 @@
 # 👽 a37 - Alien Recon
-
+#
 > _"H4ck th3 pl4n3t. D1g b3n34th th3 s1gn4l."_
 > _From zero to first blood, guided by ghosts in the shell._
 
@@ -87,7 +87,7 @@ alienrecon quick-recon --target 10.10.10.10
 
 **What it does:**
 1. **Initial Port Scan** - Fast SYN scan on top 1000 ports with `-Pn` flag
-2. **Service Detection** - Detailed version detection on discovered open ports  
+2. **Service Detection** - Detailed version detection on discovered open ports
 3. **Web Enumeration** - Automatic directory fuzzing and vulnerability scanning on HTTP/HTTPS services
 
 Each step requires your confirmation and shows educational parameter explanations. Perfect for CTF beginners who want to learn while getting comprehensive results quickly.
